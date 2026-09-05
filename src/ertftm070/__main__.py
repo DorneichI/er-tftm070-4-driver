@@ -6,7 +6,9 @@
     ertftm070 image photo.png   show an image (needs Pillow)
     ertftm070 gramcheck         write known pixels, read them back from GRAM
 
-Works identically as ``python -m ertftm070``.
+After drawing, the picture stays on screen until Ctrl+C (which turns the
+backlight off); pass --once to exit immediately.  Works identically as
+``python -m ertftm070``.
 """
 from __future__ import annotations
 
@@ -50,6 +52,12 @@ def build_parser() -> argparse.ArgumentParser:
         choices=[0, 90, 180, 270],
         default=0,
         help="logical rotation (default: 0)",
+    )
+    parser.add_argument(
+        "--once",
+        action="store_true",
+        help="exit right after drawing instead of keeping the display on "
+        "until Ctrl+C (turns the backlight off)",
     )
     sub = parser.add_subparsers(dest="command", required=True)
 
@@ -124,11 +132,27 @@ def run(args: argparse.Namespace, display: Display | None = None) -> int:
 def main(argv: list[str] | None = None) -> None:
     logging.basicConfig(level=logging.INFO, format="%(levelname)s %(message)s")
     args = build_parser().parse_args(argv)
+    display = None
     try:
-        sys.exit(run(args))
+        display = _make_display(args)
+        display.open()
+        code = run(args, display)
+        if not args.once:
+            # keep the picture on screen until the user is done looking;
+            # Ctrl-C (or SIGTERM) turns the backlight off and exits
+            print("display on — press Ctrl+C to exit")
+            while True:
+                time.sleep(1)
     except Ertftm070Error as exc:
         print(f"error: {exc}", file=sys.stderr)
         sys.exit(1)
+    except KeyboardInterrupt:
+        print()
+        code = 0
+    finally:
+        if display is not None:
+            display.close()
+    sys.exit(code)
 
 
 if __name__ == "__main__":

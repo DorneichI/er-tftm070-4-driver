@@ -56,6 +56,9 @@ ertftm070 image photo.png # show an image
 ertftm070 gramcheck       # write + read back GRAM (pixel-path proof)
 ```
 
+The picture stays on screen until Ctrl+C (which turns the backlight off
+and releases the GPIOs); pass `--once` to exit immediately instead.
+
 Or from a source checkout: `python3 examples/color_bars.py`,
 `python3 examples/show_image.py photo.png`,
 `python3 examples/small_demo.py`.
