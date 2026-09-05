@@ -17,7 +17,7 @@ display from a Raspberry Pi, and contains the working driver:
 |---|---|
 | [`driver/display_test.py`](driver/display_test.py) | Python init sequence, bus self-test, test patterns, diagnostics |
 | [`driver/fill.c`](driver/fill.c) | Tiny C pixel-blaster (via `/dev/gpiomem`) that makes full-screen fills fast |
-| [`docs/WIRING.md`](docs/WIRING.md) | Pin-by-pin wiring, with diagrams |
+| [`docs/WIRING.md`](docs/WIRING.md) | The full wiring table — one table, every pin |
 | [`docs/INIT-SEQUENCE.md`](docs/INIT-SEQUENCE.md) | The exact register sequence and why each register matters |
 | [`docs/LESSONS.md`](docs/LESSONS.md) | Everything we learned the hard way — read this before debugging |
 
