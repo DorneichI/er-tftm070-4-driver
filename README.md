@@ -69,7 +69,7 @@ Or from a source checkout: `python3 examples/color_bars.py`,
 |---|---|
 | Fill screen / rectangle | `lcd.fill(rgb565)` · `lcd.fill_rect(x, y, w, h, rgb565)` |
 | Single pixel | `lcd.set_pixel(x, y, rgb565)` |
-| Images | `lcd.image(pil_image, x=0, y=0)` — draw text/shapes/UI in Pillow first |
+| Images | `lcd.image(pil_image, x=0, y=0, fit=False)` — draw text/shapes/UI in Pillow first; `fit=True` scales to the (possibly rotated) screen |
 | Rotation | `lcd.rotation = 0 / 90 / 180 / 270` |
 | Backlight | `lcd.backlight(True / False)` |
 | Power | `lcd.sleep()` · `lcd.wake()` |

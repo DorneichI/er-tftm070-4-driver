@@ -112,7 +112,7 @@ def run(args: argparse.Namespace, display: Display | None = None) -> int:
 
             img = Image.open(args.path)
             t0 = time.time()
-            display.image(img, args.x, args.y)
+            display.image(img, args.x, args.y, fit=True)
             print(
                 f"{img.size[0]}x{img.size[1]} image blitted in "
                 f"{time.time() - t0:.1f} s"

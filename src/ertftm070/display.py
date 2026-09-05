@@ -28,7 +28,7 @@ from array import array
 from typing import TYPE_CHECKING
 
 from . import backends
-from .colors import rgb888_to_565_buffer
+from .colors import fit_image, rgb888_to_565_buffer
 from .errors import NotOnRaspberryPi
 from .init import INIT_UTFT, Table
 from .pins import DEFAULT_PINS, Pins
@@ -323,7 +323,9 @@ class Display:
         self._set_window(x, y, x, y)
         self._blit(array("H", [color & 0xFFFF]))
 
-    def image(self, img: Image.Image, x: int = 0, y: int = 0) -> None:
+    def image(
+        self, img: Image.Image, x: int = 0, y: int = 0, fit: bool = False
+    ) -> None:
         """Blit a Pillow image at the given top-left corner.
 
         The image is converted to RGB and packed to RGB565 rows; anything
@@ -331,8 +333,18 @@ class Display:
         charts or a whole UI into a PIL image first and blit it here —
         that's the intended pattern.
 
+        Args:
+            img: The Pillow image to show.
+            x, y: Top-left corner in logical coordinates.
+            fit: If True, scale the image down (aspect ratio preserved)
+                to fit inside the current logical screen.  Useful after
+                a rotation, which swaps ``width``/``height``: an 800x480
+                image no longer fits a 480x800 screen.
+
         Requires the ``pillow`` extra: ``pip install ertftm070[Pillow]``.
         """
+        if fit:
+            img = fit_image(img, self.width - x, self.height - y)
         buf = rgb888_to_565_buffer(img)
         w, h = img.size
         self._check_bounds(x, y, w, h)

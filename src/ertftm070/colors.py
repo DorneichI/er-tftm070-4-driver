@@ -45,3 +45,17 @@ def rgb888_to_565_buffer(image: Image.Image) -> array:
             buf[i] = ((r >> 3) << 11) | ((g >> 2) << 5) | (b >> 3)
             i += 1
     return buf
+
+
+def fit_image(image: Image.Image, box_w: int, box_h: int) -> Image.Image:
+    """Return a copy of ``image`` scaled to fit inside ``box_w x box_h``.
+
+    Aspect ratio is preserved; images smaller than the box are left as
+    they are (never enlarged).  Used by :meth:`ertftm070.Display.image`
+    with ``fit=True`` — e.g. after a rotation swaps the screen's
+    dimensions.  The default BICUBIC resample keeps this compatible with
+    every Pillow version.
+    """
+    img = image.copy()  # thumbnail() resizes in place
+    img.thumbnail((box_w, box_h))
+    return img

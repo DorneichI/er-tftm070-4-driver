@@ -85,6 +85,24 @@ def test_image_blit(display, bus):
     assert [b for _, b in stream[j + 1 : j + 5]] == [0x00, 0x07, 0x00, 0x09]
 
 
+def test_image_fit_at_rotation(display, bus):
+    # regression: an 800x480 image does not fit a 480x800 (rotated) screen;
+    # fit=True must scale it instead of raising
+    display.open()
+    display.rotation = 90
+    im = Image.new("RGB", (800, 480), (255, 0, 0))
+    display.image(im, fit=True)
+    assert len(bus.streams[-1]) == 480 * 288  # 800x480 scaled to 480x288
+
+
+def test_image_without_fit_raises_when_rotated(display, bus):
+    display.open()
+    display.rotation = 90
+    im = Image.new("RGB", (800, 480), (255, 0, 0))
+    with pytest.raises(ValueError):
+        display.image(im)  # 800 wide does not fit the 480-wide screen
+
+
 def test_bounds_checks(display, bus):
     display.open()
     with pytest.raises(ValueError):

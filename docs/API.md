@@ -40,8 +40,11 @@ Attributes: `width`, `height` (follow the rotation), `pins`, `rotation`.
   the right way to do partial updates (redraw only what changed).
 - `set_pixel(x, y, color)` — single-pixel window write. Fine for sparse
   updates; use `fill_rect`/`image` for anything dense.
-- `image(pil_image, x=0, y=0)` — convert a Pillow image to RGB565 rows
-  and blit it at the given top-left corner. Requires the `Pillow` extra.
+- `image(pil_image, x=0, y=0, fit=False)` — convert a Pillow image to
+  RGB565 rows and blit it at the given top-left corner. With `fit=True`
+  the image is scaled down (aspect preserved) to fit the current logical
+  screen — handy after a rotation swaps `width`/`height`. Requires the
+  `Pillow` extra.
 
 **Display state**
 

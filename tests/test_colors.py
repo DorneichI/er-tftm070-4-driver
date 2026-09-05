@@ -3,7 +3,7 @@ from __future__ import annotations
 
 from PIL import Image
 
-from ertftm070.colors import rgb565, rgb888_to_565_buffer
+from ertftm070.colors import fit_image, rgb565, rgb888_to_565_buffer
 
 
 def test_rgb565_primaries():
@@ -49,3 +49,12 @@ def test_buffer_packing_converts_modes():
     im = Image.new("RGBA", (1, 1), (255, 0, 0, 128))
     buf = rgb888_to_565_buffer(im)
     assert list(buf) == [0xF800]
+
+
+def test_fit_image_preserves_aspect_and_never_enlarges():
+    im = Image.new("RGB", (800, 480))
+    scaled = fit_image(im, 480, 800)
+    assert scaled.size == (480, 288)  # aspect preserved
+    assert im.size == (800, 480)  # original untouched
+    small = Image.new("RGB", (100, 50))
+    assert fit_image(small, 480, 800).size == (100, 50)  # not enlarged
