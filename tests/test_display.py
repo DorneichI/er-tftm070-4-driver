@@ -103,6 +103,58 @@ def test_image_without_fit_raises_when_rotated(display, bus):
         display.image(im)  # 800 wide does not fit the 480-wide screen
 
 
+def _asymmetric_image():
+    """A 2x3 image with a distinct color per pixel (rotation direction check)."""
+    im = Image.new("RGB", (2, 3))
+    colors = [
+        (255, 0, 0), (0, 255, 0), (0, 0, 255),  # x=0 column, top to bottom
+        (255, 255, 0), (255, 0, 255), (0, 255, 255),  # x=1 column
+    ]
+    for y in range(3):
+        for x in range(2):
+            im.putpixel((x, y), colors[x * 3 + y])
+    return im
+
+
+@pytest.mark.parametrize(
+    "rotation,transpose",
+    [
+        (90, Image.Transpose.ROTATE_90),  # CCW transpose, matches (x,y)->(y,479-x)
+        (180, Image.Transpose.ROTATE_180),
+        (270, Image.Transpose.ROTATE_270),  # CW transpose, matches (x,y)->(799-y,x)
+    ],
+)
+def test_image_stream_is_rotated_in_software(display, bus, rotation, transpose):
+    """The stream must equal the transposed image buffer: the panel never
+    rotates (MADCTL stays at its verified value); PIL pre-rotates instead."""
+    display.open()
+    display.rotation = rotation
+    im = _asymmetric_image()
+    display.image(im)
+    expected = list(rgb565_buffer(im.transpose(transpose)))
+    assert bus.streams[-1] == expected
+
+
+def test_rotate_image_direction():
+    """Pin the transpose direction against the algebra:
+    at rotation 90 the stream row r, col c must be img(W-1-r, c) —
+    i.e. PIL's counter-clockwise ROTATE_90."""
+    from ertftm070.colors import rotate_image
+
+    im = _asymmetric_image()
+    rotated = rotate_image(im, 90)
+    assert rotated.size == (3, 2)  # 2x3 -> 3x2
+    for y_ in range(2):
+        for x_ in range(3):
+            assert rotated.getpixel((x_, y_)) == im.getpixel((1 - y_, x_))
+
+
+def rgb565_buffer(im):
+    from ertftm070.colors import rgb888_to_565_buffer
+
+    return rgb888_to_565_buffer(im)
+
+
 def test_bounds_checks(display, bus):
     display.open()
     with pytest.raises(ValueError):
@@ -126,8 +178,8 @@ def test_rotation_dimensions_and_window_mapping(display, bus):
     assert [b for _, b in stream[i + 1 : i + 5]] == [0x00, 0x00, 0x03, 0x1F]  # 0..799
     j = stream.index((False, 0x2B))
     assert [b for _, b in stream[j + 1 : j + 5]] == [0x00, 0x00, 0x01, 0xDF]  # 0..479
-    # rotation changes MADCTL
-    assert bus.commands().count(0x36) >= 2  # once during init, once for rotation
+    # software rotation never touches MADCTL: only the init table writes 0x36
+    assert bus.commands().count(0x36) == 1
 
 
 def test_rotation_rejects_bad_values(display):
@@ -222,5 +274,5 @@ def test_backlight_off_via_constructor():
 def test_auto_init_false_skips_init():
     bus = FakeBus()
     Display(backend=bus, auto_init=False).open()
-    # no init table sent — only the MADCTL write from _apply_rotation
-    assert bus.commands() == [0x36]
+    # no init table, no MADCTL writes — rotation is pure software
+    assert bus.commands() == []

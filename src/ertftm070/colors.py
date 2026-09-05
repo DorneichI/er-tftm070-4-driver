@@ -59,3 +59,28 @@ def fit_image(image: Image.Image, box_w: int, box_h: int) -> Image.Image:
     img = image.copy()  # thumbnail() resizes in place
     img.thumbnail((box_w, box_h))
     return img
+
+
+def rotate_image(image: Image.Image, rotation: int) -> Image.Image:
+    """Rotate an image's *content* to match a software display rotation.
+
+    The SSD1963's MADCTL flip bits scramble the memory-write pointer on
+    this board, so ertftm070 rotates in software: the panel stays in its
+    native orientation and images are pre-rotated here (an exact pixel
+    permutation via ``transpose()`` — no resampling, no blur) before
+    being blitted into the mapped window.  The transpose directions were
+    derived from the logical→controller mappings in ``display.py`` and
+    verified against GRAM read-back on hardware.
+
+    ``rotation=0`` returns the image unchanged (no copy).
+    """
+    if rotation == 0:
+        return image
+    from PIL import Image as _PIL  # lazy — pillow extra only for image work
+
+    transposes = {
+        90: _PIL.Transpose.ROTATE_90,  # CCW, matches (x,y) -> (y, 479-x)
+        180: _PIL.Transpose.ROTATE_180,
+        270: _PIL.Transpose.ROTATE_270,  # CW, matches (x,y) -> (799-y, x)
+    }
+    return image.transpose(transposes[rotation])

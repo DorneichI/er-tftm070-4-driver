@@ -28,7 +28,7 @@ from array import array
 from typing import TYPE_CHECKING
 
 from . import backends
-from .colors import fit_image, rgb888_to_565_buffer
+from .colors import fit_image, rgb888_to_565_buffer, rotate_image
 from .errors import NotOnRaspberryPi
 from .init import INIT_UTFT, Table
 from .pins import DEFAULT_PINS, Pins
@@ -38,14 +38,18 @@ if TYPE_CHECKING:
 
 log = logging.getLogger("ertftm070")
 
-# SSD1963 0x36 (address mode) values per rotation.  Every state keeps the
-# BGR bit (0x08) set for this panel.  Axis directions (which way 90° turns,
-# and where the flips apply) are verified on hardware — see the README.
+# Rotation is done in SOFTWARE: the panel keeps its verified native
+# orientation (MADCTL = 0x08, landscape + BGR) and images are pre-rotated
+# before blitting.  The SSD1963's 0x36 flip bits (MY/MX/MV) do not
+# reliably remap the memory-write pointer — GRAM read-back on hardware
+# showed scrambled writes for MADCTL-based rotations — so we never touch
+# 0x36 after init.  The mappings below are logical→controller; 270° was
+# verified byte-perfect against GRAM, the rest follow by composition.
 _ROTATIONS = {
-    0: {"mad": 0x08, "width": 800, "height": 480},
-    90: {"mad": 0x48, "width": 480, "height": 800},  # MV | BGR
-    180: {"mad": 0x38, "width": 800, "height": 480},  # MY | MX | BGR
-    270: {"mad": 0x78, "width": 480, "height": 800},  # MV | MY | MX | BGR
+    0: {"width": 800, "height": 480},
+    90: {"width": 480, "height": 800},
+    180: {"width": 800, "height": 480},
+    270: {"width": 480, "height": 800},
 }
 
 _ROTATION_VALUES = frozenset(_ROTATIONS)
@@ -55,8 +59,8 @@ def _map_point(rotation: int, x: int, y: int) -> tuple[int, int]:
     """Map a logical (x, y) to controller coordinates for `rotation`.
 
     The mapping preserves handedness (one axis flip per 90° step) so the
-    image rotates rather than mirrors.  Exact sign conventions verified
-    on hardware.
+    image rotates rather than mirrors.  270° verified byte-perfect
+    against GRAM read-back on hardware; the others follow by composition.
     """
     if rotation == 90:
         return (y, 479 - x)
@@ -148,7 +152,6 @@ class Display:
             if self._auto_init:
                 self.reset()
                 self._init()
-            self._apply_rotation()
             self.backlight(self._backlight_on)
         except BaseException:
             # leave no half-configured bus behind
@@ -345,9 +348,10 @@ class Display:
         """
         if fit:
             img = fit_image(img, self.width - x, self.height - y)
-        buf = rgb888_to_565_buffer(img)
         w, h = img.size
-        self._check_bounds(x, y, w, h)
+        self._check_bounds(x, y, w, h)  # logical coordinates
+        img = rotate_image(img, self._rotation)
+        buf = rgb888_to_565_buffer(img)
         self._set_window(x, y, x + w - 1, y + h - 1)
         self._blit(buf)
 
@@ -367,13 +371,6 @@ class Display:
         self._rotation = degrees
         self.width = _ROTATIONS[degrees]["width"]
         self.height = _ROTATIONS[degrees]["height"]
-        if self._bus is not None:
-            self._apply_rotation()
-
-    def _apply_rotation(self) -> None:
-        mad = _ROTATIONS[self._rotation]["mad"]
-        self._command(0x36)
-        self._data(mad)
 
     def backlight(self, on: bool) -> None:
         """Switch the backlight on (True) or off (False)."""
