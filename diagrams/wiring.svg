@@ -1,0 +1,187 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 980 726" font-family="ui-monospace, SFMono-Regular, Menlo, monospace">
+<rect width="980" height="726" fill="#fafaf7"/>
+<text x="30" y="40" font-size="22" font-weight="bold" fill="#1a1a1a">ER-TFTM070-4V2.1 ⇄ Raspberry Pi Zero W — 16-bit 8080 wiring</text>
+<text x="30" y="60" font-size="12" fill="#555">Display pin numbers per ER-TFTM070-4V2.1 datasheet §4.1 · 24 wires · DB16–DB23 and touch pins unused</text>
+<rect x="20" y="74" width="300" height="588" rx="6" fill="#ffffff" stroke="#333" stroke-width="1.5"/>
+<text x="170" y="96" font-size="14" font-weight="bold" fill="#333">Raspberry Pi Zero W (phys)</text>
+<rect x="520" y="74" width="300" height="588" rx="6" fill="#ffffff" stroke="#333" stroke-width="1.5"/>
+<text x="670" y="96" font-size="14" font-weight="bold" fill="#333">Display FPC (pin)</text>
+<circle cx="40" cy="100" r="4" fill="#333"/>
+<text x="52" y="104" font-size="12" fill="#222">2</text>
+<text x="130" y="104" font-size="12" text-anchor="end" fill="#222">5V</text>
+<circle cx="40" cy="124" r="4" fill="#333"/>
+<text x="52" y="128" font-size="12" fill="#222">6</text>
+<text x="130" y="128" font-size="12" text-anchor="end" fill="#222">GND</text>
+<circle cx="40" cy="148" r="4" fill="#333"/>
+<text x="52" y="152" font-size="12" fill="#222">7</text>
+<text x="130" y="152" font-size="12" text-anchor="end" fill="#222">GPIO4</text>
+<circle cx="40" cy="172" r="4" fill="#333"/>
+<text x="52" y="176" font-size="12" fill="#222">11</text>
+<text x="130" y="176" font-size="12" text-anchor="end" fill="#222">GPIO17</text>
+<circle cx="40" cy="196" r="4" fill="#333"/>
+<text x="52" y="200" font-size="12" fill="#222">12</text>
+<text x="130" y="200" font-size="12" text-anchor="end" fill="#222">GPIO18</text>
+<circle cx="40" cy="220" r="4" fill="#333"/>
+<text x="52" y="224" font-size="12" fill="#222">13</text>
+<text x="130" y="224" font-size="12" text-anchor="end" fill="#222">GPIO27</text>
+<circle cx="40" cy="244" r="4" fill="#333"/>
+<text x="52" y="248" font-size="12" fill="#222">15</text>
+<text x="130" y="248" font-size="12" text-anchor="end" fill="#222">GPIO22</text>
+<circle cx="40" cy="268" r="4" fill="#333"/>
+<text x="52" y="272" font-size="12" fill="#222">16</text>
+<text x="130" y="272" font-size="12" text-anchor="end" fill="#222">GPIO23</text>
+<circle cx="40" cy="292" r="4" fill="#333"/>
+<text x="52" y="296" font-size="12" fill="#222">18</text>
+<text x="130" y="296" font-size="12" text-anchor="end" fill="#222">GPIO24</text>
+<circle cx="40" cy="316" r="4" fill="#333"/>
+<text x="52" y="320" font-size="12" fill="#222">19</text>
+<text x="130" y="320" font-size="12" text-anchor="end" fill="#222">GPIO10</text>
+<circle cx="40" cy="340" r="4" fill="#333"/>
+<text x="52" y="344" font-size="12" fill="#222">21</text>
+<text x="130" y="344" font-size="12" text-anchor="end" fill="#222">GPIO9</text>
+<circle cx="40" cy="364" r="4" fill="#333"/>
+<text x="52" y="368" font-size="12" fill="#222">22</text>
+<text x="130" y="368" font-size="12" text-anchor="end" fill="#222">GPIO25</text>
+<circle cx="40" cy="388" r="4" fill="#333"/>
+<text x="52" y="392" font-size="12" fill="#222">23</text>
+<text x="130" y="392" font-size="12" text-anchor="end" fill="#222">GPIO11</text>
+<circle cx="40" cy="412" r="4" fill="#333"/>
+<text x="52" y="416" font-size="12" fill="#222">24</text>
+<text x="130" y="416" font-size="12" text-anchor="end" fill="#222">GPIO8</text>
+<circle cx="40" cy="436" r="4" fill="#333"/>
+<text x="52" y="440" font-size="12" fill="#222">26</text>
+<text x="130" y="440" font-size="12" text-anchor="end" fill="#222">GPIO7</text>
+<circle cx="40" cy="460" r="4" fill="#333"/>
+<text x="52" y="464" font-size="12" fill="#222">29</text>
+<text x="130" y="464" font-size="12" text-anchor="end" fill="#222">GPIO5</text>
+<circle cx="40" cy="484" r="4" fill="#333"/>
+<text x="52" y="488" font-size="12" fill="#222">31</text>
+<text x="130" y="488" font-size="12" text-anchor="end" fill="#222">GPIO6</text>
+<circle cx="40" cy="508" r="4" fill="#333"/>
+<text x="52" y="512" font-size="12" fill="#222">32</text>
+<text x="130" y="512" font-size="12" text-anchor="end" fill="#222">GPIO12</text>
+<circle cx="40" cy="532" r="4" fill="#333"/>
+<text x="52" y="536" font-size="12" fill="#222">33</text>
+<text x="130" y="536" font-size="12" text-anchor="end" fill="#222">GPIO13</text>
+<circle cx="40" cy="556" r="4" fill="#333"/>
+<text x="52" y="560" font-size="12" fill="#222">35</text>
+<text x="130" y="560" font-size="12" text-anchor="end" fill="#222">GPIO19</text>
+<circle cx="40" cy="580" r="4" fill="#333"/>
+<text x="52" y="584" font-size="12" fill="#222">36</text>
+<text x="130" y="584" font-size="12" text-anchor="end" fill="#222">GPIO16</text>
+<circle cx="40" cy="604" r="4" fill="#333"/>
+<text x="52" y="608" font-size="12" fill="#222">37</text>
+<text x="130" y="608" font-size="12" text-anchor="end" fill="#222">GPIO26</text>
+<circle cx="40" cy="628" r="4" fill="#333"/>
+<text x="52" y="632" font-size="12" fill="#222">38</text>
+<text x="130" y="632" font-size="12" text-anchor="end" fill="#222">GPIO20</text>
+<circle cx="40" cy="652" r="4" fill="#333"/>
+<text x="52" y="656" font-size="12" fill="#222">40</text>
+<text x="130" y="656" font-size="12" text-anchor="end" fill="#222">GPIO21</text>
+<circle cx="740" cy="100" r="4" fill="#333"/>
+<text x="728" y="104" font-size="12" text-anchor="end" fill="#222">1</text>
+<text x="752" y="104" font-size="12" fill="#222">VSS GND</text>
+<circle cx="740" cy="124" r="4" fill="#333"/>
+<text x="728" y="128" font-size="12" text-anchor="end" fill="#222">2</text>
+<text x="752" y="128" font-size="12" fill="#222">VDD 5V</text>
+<circle cx="740" cy="148" r="4" fill="#333"/>
+<text x="728" y="152" font-size="12" text-anchor="end" fill="#222">3</text>
+<text x="752" y="152" font-size="12" fill="#222">/CS</text>
+<circle cx="740" cy="172" r="4" fill="#333"/>
+<text x="728" y="176" font-size="12" text-anchor="end" fill="#222">4</text>
+<text x="752" y="176" font-size="12" fill="#222">D/C</text>
+<circle cx="740" cy="196" r="4" fill="#333"/>
+<text x="728" y="200" font-size="12" text-anchor="end" fill="#222">5</text>
+<text x="752" y="200" font-size="12" fill="#222">E_/RD</text>
+<circle cx="740" cy="220" r="4" fill="#333"/>
+<text x="728" y="224" font-size="12" text-anchor="end" fill="#222">6</text>
+<text x="752" y="224" font-size="12" fill="#222">R/W_/WR</text>
+<circle cx="740" cy="244" r="4" fill="#333"/>
+<text x="728" y="248" font-size="12" text-anchor="end" fill="#222">7</text>
+<text x="752" y="248" font-size="12" fill="#222">RESET</text>
+<circle cx="740" cy="268" r="4" fill="#333"/>
+<text x="728" y="272" font-size="12" text-anchor="end" fill="#222">9</text>
+<text x="752" y="272" font-size="12" fill="#222">DB0</text>
+<circle cx="740" cy="292" r="4" fill="#333"/>
+<text x="728" y="296" font-size="12" text-anchor="end" fill="#222">10</text>
+<text x="752" y="296" font-size="12" fill="#222">DB1</text>
+<circle cx="740" cy="316" r="4" fill="#333"/>
+<text x="728" y="320" font-size="12" text-anchor="end" fill="#222">11</text>
+<text x="752" y="320" font-size="12" fill="#222">DB2</text>
+<circle cx="740" cy="340" r="4" fill="#333"/>
+<text x="728" y="344" font-size="12" text-anchor="end" fill="#222">12</text>
+<text x="752" y="344" font-size="12" fill="#222">DB3</text>
+<circle cx="740" cy="364" r="4" fill="#333"/>
+<text x="728" y="368" font-size="12" text-anchor="end" fill="#222">13</text>
+<text x="752" y="368" font-size="12" fill="#222">DB4</text>
+<circle cx="740" cy="388" r="4" fill="#333"/>
+<text x="728" y="392" font-size="12" text-anchor="end" fill="#222">14</text>
+<text x="752" y="392" font-size="12" fill="#222">DB5</text>
+<circle cx="740" cy="412" r="4" fill="#333"/>
+<text x="728" y="416" font-size="12" text-anchor="end" fill="#222">15</text>
+<text x="752" y="416" font-size="12" fill="#222">DB6</text>
+<circle cx="740" cy="436" r="4" fill="#333"/>
+<text x="728" y="440" font-size="12" text-anchor="end" fill="#222">16</text>
+<text x="752" y="440" font-size="12" fill="#222">DB7</text>
+<circle cx="740" cy="460" r="4" fill="#333"/>
+<text x="728" y="464" font-size="12" text-anchor="end" fill="#222">17</text>
+<text x="752" y="464" font-size="12" fill="#222">DB8</text>
+<circle cx="740" cy="484" r="4" fill="#333"/>
+<text x="728" y="488" font-size="12" text-anchor="end" fill="#222">18</text>
+<text x="752" y="488" font-size="12" fill="#222">DB9</text>
+<circle cx="740" cy="508" r="4" fill="#333"/>
+<text x="728" y="512" font-size="12" text-anchor="end" fill="#222">19</text>
+<text x="752" y="512" font-size="12" fill="#222">DB10</text>
+<circle cx="740" cy="532" r="4" fill="#333"/>
+<text x="728" y="536" font-size="12" text-anchor="end" fill="#222">20</text>
+<text x="752" y="536" font-size="12" fill="#222">DB11</text>
+<circle cx="740" cy="556" r="4" fill="#333"/>
+<text x="728" y="560" font-size="12" text-anchor="end" fill="#222">21</text>
+<text x="752" y="560" font-size="12" fill="#222">DB12</text>
+<circle cx="740" cy="580" r="4" fill="#333"/>
+<text x="728" y="584" font-size="12" text-anchor="end" fill="#222">22</text>
+<text x="752" y="584" font-size="12" fill="#222">DB13</text>
+<circle cx="740" cy="604" r="4" fill="#333"/>
+<text x="728" y="608" font-size="12" text-anchor="end" fill="#222">23</text>
+<text x="752" y="608" font-size="12" fill="#222">DB14</text>
+<circle cx="740" cy="628" r="4" fill="#333"/>
+<text x="728" y="632" font-size="12" text-anchor="end" fill="#222">24</text>
+<text x="752" y="632" font-size="12" fill="#222">DB15</text>
+<circle cx="740" cy="652" r="4" fill="#333"/>
+<text x="728" y="656" font-size="12" text-anchor="end" fill="#222">39</text>
+<text x="752" y="656" font-size="12" fill="#222">BL ON/OFF</text>
+<path d="M 130 100 C 330.0 100, 450.0 124, 650 124" fill="none" stroke="#e74c3c" stroke-width="2" opacity="0.9"/>
+<path d="M 130 124 C 330.0 124, 450.0 100, 650 100" fill="none" stroke="#2c3e50" stroke-width="2" opacity="0.9"/>
+<path d="M 130 604 C 330.0 604, 450.0 148, 650 148" fill="none" stroke="#8e44ad" stroke-width="2" opacity="0.9"/>
+<path d="M 130 628 C 330.0 628, 450.0 172, 650 172" fill="none" stroke="#8e44ad" stroke-width="2" opacity="0.9"/>
+<path d="M 130 580 C 330.0 580, 450.0 196, 650 196" fill="none" stroke="#8e44ad" stroke-width="2" opacity="0.9"/>
+<path d="M 130 652 C 330.0 652, 450.0 220, 650 220" fill="none" stroke="#8e44ad" stroke-width="2" opacity="0.9"/>
+<path d="M 130 508 C 330.0 508, 450.0 244, 650 244" fill="none" stroke="#8e44ad" stroke-width="2" opacity="0.9"/>
+<path d="M 130 148 C 330.0 148, 450.0 268, 650 268" fill="none" stroke="#2980b9" stroke-width="2" opacity="0.9"/>
+<path d="M 130 172 C 330.0 172, 450.0 292, 650 292" fill="none" stroke="#2980b9" stroke-width="2" opacity="0.9"/>
+<path d="M 130 220 C 330.0 220, 450.0 316, 650 316" fill="none" stroke="#2980b9" stroke-width="2" opacity="0.9"/>
+<path d="M 130 244 C 330.0 244, 450.0 340, 650 340" fill="none" stroke="#2980b9" stroke-width="2" opacity="0.9"/>
+<path d="M 130 460 C 330.0 460, 450.0 364, 650 364" fill="none" stroke="#2980b9" stroke-width="2" opacity="0.9"/>
+<path d="M 130 484 C 330.0 484, 450.0 388, 650 388" fill="none" stroke="#2980b9" stroke-width="2" opacity="0.9"/>
+<path d="M 130 532 C 330.0 532, 450.0 412, 650 412" fill="none" stroke="#2980b9" stroke-width="2" opacity="0.9"/>
+<path d="M 130 556 C 330.0 556, 450.0 436, 650 436" fill="none" stroke="#2980b9" stroke-width="2" opacity="0.9"/>
+<path d="M 130 436 C 330.0 436, 450.0 460, 650 460" fill="none" stroke="#16a085" stroke-width="2" opacity="0.9"/>
+<path d="M 130 412 C 330.0 412, 450.0 484, 650 484" fill="none" stroke="#16a085" stroke-width="2" opacity="0.9"/>
+<path d="M 130 340 C 330.0 340, 450.0 508, 650 508" fill="none" stroke="#16a085" stroke-width="2" opacity="0.9"/>
+<path d="M 130 316 C 330.0 316, 450.0 532, 650 532" fill="none" stroke="#16a085" stroke-width="2" opacity="0.9"/>
+<path d="M 130 388 C 330.0 388, 450.0 556, 650 556" fill="none" stroke="#16a085" stroke-width="2" opacity="0.9"/>
+<path d="M 130 196 C 330.0 196, 450.0 580, 650 580" fill="none" stroke="#16a085" stroke-width="2" opacity="0.9"/>
+<path d="M 130 268 C 330.0 268, 450.0 604, 650 604" fill="none" stroke="#16a085" stroke-width="2" opacity="0.9"/>
+<path d="M 130 292 C 330.0 292, 450.0 628, 650 628" fill="none" stroke="#16a085" stroke-width="2" opacity="0.9"/>
+<path d="M 130 364 C 330.0 364, 450.0 652, 650 652" fill="none" stroke="#f39c12" stroke-width="2" opacity="0.9"/>
+<line x1="30" y1="642" x2="64" y2="642" stroke="#e74c3c" stroke-width="3"/>
+<text x="72" y="646" font-size="12" fill="#333">5 V / GND power</text>
+<line x1="190.0" y1="642" x2="224.0" y2="642" stroke="#2980b9" stroke-width="3"/>
+<text x="232.0" y="646" font-size="12" fill="#333">DB0–DB7 (low byte)</text>
+<line x1="370.4" y1="642" x2="404.4" y2="642" stroke="#16a085" stroke-width="3"/>
+<text x="412.4" y="646" font-size="12" fill="#333">DB8–DB15 (high byte)</text>
+<line x1="30" y1="668" x2="64" y2="668" stroke="#8e44ad" stroke-width="3"/>
+<text x="72" y="672" font-size="12" fill="#333">control (CS, D/C, RD, WR, RESET)</text>
+<line x1="305.6" y1="668" x2="339.6" y2="668" stroke="#f39c12" stroke-width="3"/>
+<text x="347.6" y="672" font-size="12" fill="#333">backlight enable</text>
+</svg>
