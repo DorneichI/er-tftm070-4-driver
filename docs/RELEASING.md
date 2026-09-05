@@ -1,0 +1,52 @@
+# Releasing
+
+Releases are published to [PyPI](https://pypi.org/project/ertftm070/) by
+GitHub Actions **trusted publishing** — no tokens, no secrets, the CI
+workflow is authorized directly.
+
+## One-time setup (needs a PyPI account)
+
+1. Create an account at <https://pypi.org> if you don't have one.
+2. On GitHub, create the **release environment**: repo → Settings →
+   Environments → **New environment** → `release` (no secrets needed;
+   it just gates the publish job).
+3. On PyPI, go to **Publishing → Trusted Publishers → Add a pending publisher**:
+   - Project name: `ertftm070`
+   - Owner: `DorneichI`
+   - Repository name: `er-tftm070-4-driver`
+   - Workflow name: `ci.yml`
+   - Environment name: `release`
+4. Confirm. Publishing is now unlocked for this repository's tags.
+
+## Cutting a release
+
+1. Make sure `main` is green (CI badge in the README).
+2. Update `CHANGELOG.md`: move the `[Unreleased]` entries under the new
+   version heading, dated.
+3. Commit, then tag **with a `v` prefix** — the version on PyPI comes
+   from the tag (setuptools_scm):
+   ```bash
+   git tag v1.0.0
+   git push origin v1.0.0
+   ```
+4. CI runs lint, tests, and builds on the tag, then publishes the
+   sdist + wheel to PyPI via the trusted publisher. Watch the
+   Actions run; the `release` environment gates the publish step.
+
+## After publishing
+
+Verify from a clean machine / venv:
+
+```bash
+pip install ertftm070[Pillow]
+python -c "import ertftm070; print(ertftm070.__version__, ertftm070.BACKEND)"
+```
+
+## If you need to yank a release
+
+```bash
+pip install twine
+twine upload --repository-url https://upload.pypi.org/legacy/ -u __token__ .
+# or, via the PyPI web UI: project → Release → Yank
+```
+Yanking hides the release from installs but keeps the filename reserved.
