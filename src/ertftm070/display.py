@@ -422,7 +422,13 @@ class Display:
         b.pin_write(self.pins.backlight, bool(on))
 
     def sleep(self) -> None:
-        """Display off + enter sleep (minimal power)."""
+        """Display off + enter sleep (minimal power).
+
+        The panel's liquid crystal discharges unevenly when the drive is
+        cut, so the last picture visibly fades out toward the center —
+        normal TFT physics, not a bug.  Fill the screen black first
+        (``lcd.fill(0x0000)``) for an invisible power-down.
+        """
         self._command(0x28)
         self._command(0x10)
 
