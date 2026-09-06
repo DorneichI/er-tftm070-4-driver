@@ -28,6 +28,7 @@ switches the backlight on, and applies the rotation. Leaving the block
 | `auto_init` | If `False`, skip reset+init on open (advanced) |
 | `backlight` | Whether to switch the backlight on after init |
 | `rotation` | `0`, `90`, `180` or `270` — logical orientation |
+| `write_passes` | How often each pixel is written (default 1). `2` heals most swallowed write words (a controller arbitration quirk, see `docs/LESSONS.md`) at 2× write time |
 
 Attributes: `width`, `height` (follow the rotation), `pins`, `rotation`.
 

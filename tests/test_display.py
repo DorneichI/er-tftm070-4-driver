@@ -288,6 +288,21 @@ def test_backlight_off_via_constructor():
     assert bus.pin_levels[bus.pins.backlight] is False
 
 
+def test_write_passes_doubles_the_streams():
+    bus = FakeBus()
+    display = Display(backend=bus, write_passes=2)
+    display.open()
+    bus.streams.clear()
+    display.fill_rect(0, 0, 10, 4, 0xF800)
+    assert len(bus.streams) == 8  # 4 rows x 2 passes
+    assert bus.streams[0] == bus.streams[4]  # pass 2 repeats pass 1
+
+
+def test_write_passes_rejects_zero():
+    with pytest.raises(ValueError):
+        Display(backend=FakeBus(), write_passes=0)
+
+
 def test_auto_init_false_skips_init():
     bus = FakeBus()
     Display(backend=bus, auto_init=False).open()

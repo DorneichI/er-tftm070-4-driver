@@ -103,6 +103,11 @@ class Display:
         backlight: Whether to switch the backlight on after init.
         rotation: 0, 90, 180 or 270 — logical orientation; ``width`` and
             ``height`` follow it.
+        write_passes: How often to write each pixel (default 1).  The
+            SSD1963's GRAM arbitration occasionally swallows a write word
+            (see docs/LESSONS.md); 2 passes heal most of those at 2x
+            write time — use it for content that must look perfect and
+            is drawn rarely.
     """
 
     def __init__(
@@ -113,12 +118,16 @@ class Display:
         auto_init: bool = True,
         backlight: bool = True,
         rotation: int = 0,
+        write_passes: int = 1,
     ) -> None:
         self.pins = pins
         self.init_table = init_table
         self._backend = backend
         self._auto_init = auto_init
         self._backlight_on = backlight
+        if write_passes < 1:
+            raise ValueError("write_passes must be >= 1")
+        self._write_passes = write_passes
         self._bus = None  # type: Optional[backends.Bus]
         self._opened = False
         self._rotation = 0
@@ -299,22 +308,29 @@ class Display:
         word mid-burst (see docs/LESSONS.md); in one long burst that
         shifts everything after the drop.  Per-row bursts contain any
         drop to a single row, and each row's burst-tail loss is absorbed
-        by its own 2 trailing dummy pixels.
+        by its own 2 trailing dummy pixels.  With ``write_passes`` > 1
+        every row is written again, healing most swallowed words (a word
+        must be swallowed in *every* pass to stay wrong).
         """
         width = x1 - x0 + 1
         view = memoryview(buf)
-        for row in range(y1 - y0 + 1):
-            self._command(0x2A)  # column window
-            self._data_list([(x0 >> 8) & 0xFF, x0 & 0xFF, (x1 >> 8) & 0xFF, x1 & 0xFF])
-            yy = y0 + row
-            self._command(0x2B)  # row window (a single row)
-            self._data_list([(yy >> 8) & 0xFF, yy & 0xFF, (yy >> 8) & 0xFF, yy & 0xFF])
-            self._command(0x2C)  # memory write
-            b = self._bus_checked()
-            b.pin_write(self.pins.cs, False)
-            b.pin_write(self.pins.dc, True)
-            b.pixel_stream(view[row * width : (row + 1) * width])
-            b.pin_write(self.pins.cs, True)
+        for _pass in range(self._write_passes):
+            for row in range(y1 - y0 + 1):
+                self._command(0x2A)  # column window
+                self._data_list(
+                    [(x0 >> 8) & 0xFF, x0 & 0xFF, (x1 >> 8) & 0xFF, x1 & 0xFF]
+                )
+                yy = y0 + row
+                self._command(0x2B)  # row window (a single row)
+                self._data_list(
+                    [(yy >> 8) & 0xFF, yy & 0xFF, (yy >> 8) & 0xFF, yy & 0xFF]
+                )
+                self._command(0x2C)  # memory write
+                b = self._bus_checked()
+                b.pin_write(self.pins.cs, False)
+                b.pin_write(self.pins.dc, True)
+                b.pixel_stream(view[row * width : (row + 1) * width])
+                b.pin_write(self.pins.cs, True)
 
     def _check_bounds(self, x: int, y: int, w: int, h: int) -> None:
         if w <= 0 or h <= 0:
