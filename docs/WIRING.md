@@ -66,6 +66,11 @@ four wires on top of the display wiring:
 | 36 | INT | Pi GPIO15 (phys 10) — optional; polling TD_STATUS works without it. Polarity is firmware-dependent (measured: idle low, high during touches) — the driver treats any change as an event |
 | 37 | WAKE | **3.3 V (phys 1), tied high** — a hibernating FT5x06 answers at ghost addresses instead of 0x38 |
 
+> **`/RST` is on GPIO0, not GPIO14** — this guide's early revisions
+> suggested 14, but that pin now carries TE (connector pin 8 →
+> vsync/refresh measurement). Any free GPIO works; wire it to a
+> different pin with `Touch(touch_pins=...)` (validated like `Pins`).
+
 Enable I²C (`raspi-config` → Interface Options, or `dtparam=i2c_arm=on`).
 The package driver is `ertftm070.touch` (`Touch(lcd.bus)` — see
 [docs/COMMUNITY-RESEARCH.md](COMMUNITY-RESEARCH.md) §6); the kernel

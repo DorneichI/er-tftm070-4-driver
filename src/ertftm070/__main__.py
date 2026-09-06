@@ -137,7 +137,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     subparsers.add_parser(
         "refresh", parents=[common],
-        help="measure the pixel clock (0xE7) and frame rate (TE)",
+        help="measure the pixel clock and frame rate from the TE pin",
     )
 
     subparsers.add_parser(
@@ -205,12 +205,18 @@ def run(args: argparse.Namespace, display: Display | None = None) -> int:
         if args.command == "refresh":
             try:
                 pclk_khz, hz = display.refresh_rate()
-            except TimeoutError as exc:
+            except (TimeoutError, RuntimeError) as exc:
+                # TimeoutError: no TE pulses (wiring / panel asleep);
+                # RuntimeError: Pins.te is None, or the init table lacks
+                # 0xB4/0xB6.  Both mean "cannot measure" — report and fail.
                 print(f"error: {exc}", file=sys.stderr)
                 return 1
             print(f"pixel clock (from TE): {pclk_khz} kHz")
             print(f"frame rate (TE):       {hz:.1f} Hz")
-            print(f"crystal:               {crystal_guess(pclk_khz)}")
+            print(
+                "crystal:               "
+                f"{crystal_guess(pclk_khz, display.init_table)}"
+            )
             return 0
 
         if args.command == "touch-test":
@@ -232,9 +238,13 @@ def run(args: argparse.Namespace, display: Display | None = None) -> int:
                         seen = key
                         for p in points:
                             m = touch.calibration.map(p)
+                            # mapped points are panel-native; --rotation
+                            # users want the logical frame instead
+                            ux, uy = display.unmap_point(m.x, m.y)
                             print(
                                 f"  finger {p.id}: raw=({p.x},{p.y}) "
-                                f"-> ({m.x},{m.y}) event={p.event}"
+                                f"-> panel=({m.x},{m.y}) "
+                                f"screen=({ux},{uy}) event={p.event}"
                             )
                     time.sleep(0.02)
             finally:

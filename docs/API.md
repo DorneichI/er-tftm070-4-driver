@@ -17,9 +17,10 @@ Display(
 ```
 
 A context manager. `with Display() as lcd:` opens the bus, applies the
-verified init sequence (hardware reset → register table → `0x3A=0x50`),
-switches the backlight on, and applies the rotation. Leaving the block
-(or Ctrl-C) turns the backlight off and releases the GPIO mapping.
+verified init sequence (hardware reset → register table → `0x3A=0x50`,
+→ `0x35=0x00` when `pins.te` is set), switches the backlight on, and
+applies the rotation. Leaving the block (or Ctrl-C) turns the
+backlight off and releases the GPIO mapping.
 
 | Parameter | Meaning |
 |---|---|
@@ -31,24 +32,29 @@ switches the backlight on, and applies the rotation. Leaving the block
 | `rotation` | `0`, `90`, `180` or `270` — logical orientation |
 | `write_passes` | How often each pixel is written (default 1). `2` heals most swallowed write words (a controller arbitration quirk, see `docs/LESSONS.md`) at 2× write time |
 
-Attributes: `width`, `height` (follow the rotation), `pins`, `rotation`.
+Attributes: `width`, `height` (follow the rotation), `pins`, `rotation`,
+`bus` (the opened `Bus`, `None` until `open()` — hand it to `Touch`).
 
 ### Methods
 
 **Drawing** — all colors are 16-bit RGB565 words (`rgb565(r, g, b)`).
+Every drawing call accepts `vsync=False`: with `True` each row waits
+for the start of a fresh vertical-blanking window (TE pin) before it is
+written — tear-free, at one frame per row.  Meant for narrow,
+fast-moving content; see the `vsync_wait` note below for the cost.
 
 - `fill(color)` — fill the whole (rotated) screen. Fast path, ~0.6 s.
-- `fill_rect(x, y, w, h, color)` — one window, written one row per burst
-  (a swallowed write word can then shift only one row — see
-  `docs/LESSONS.md`); the right way to do partial updates (redraw only
-  what changed).
+- `fill_rect(x, y, w, h, color, vsync=False)` — one window, written one
+  row per burst (a swallowed write word can then shift only one row —
+  see `docs/LESSONS.md`); the right way to do partial updates (redraw
+  only what changed).
 - `set_pixel(x, y, color)` — single-pixel window write. Fine for sparse
   updates; use `fill_rect`/`image` for anything dense.
-- `image(pil_image, x=0, y=0, fit=False)` — convert a Pillow image to
-  RGB565 rows and blit it at the given top-left corner. With `fit=True`
-  the image is scaled down (aspect preserved) to fit the current logical
-  screen — handy after a rotation swaps `width`/`height`. Requires the
-  `Pillow` extra.
+- `image(pil_image, x=0, y=0, fit=False, vsync=False)` — convert a
+  Pillow image to RGB565 rows and blit it at the given top-left corner.
+  With `fit=True` the image is scaled down (aspect preserved) to fit
+  the current logical screen — handy after a rotation swaps
+  `width`/`height`. Requires the `Pillow` extra.
 
 **Display state**
 
@@ -56,9 +62,34 @@ Attributes: `width`, `height` (follow the rotation), `pins`, `rotation`.
   software: the panel keeps its verified `0x36 = 0x08` (the flip bits
   scramble the GRAM write pointer on this controller) and
   `width`/`height` swap to follow.  See `docs/LESSONS.md`.
+- `unmap_point(x, y)` — inverse of the rotation mapping: a
+  panel-native point (what `Touch.read(mapped=True)` returns) → the
+  current logical frame, ready for the draw calls.  Identity at
+  `rotation=0`.
 - `backlight(on)` — backlight pin high/low.
 - `sleep()` / `wake()` — display off + enter sleep / exit sleep +
   display on.
+
+**Timing (TE pin)** — when `pins.te` is `None` (no TE wire) these
+raise `RuntimeError` instead of hanging; init also skips `0x35`.
+
+- `vsync_wait(timeout=0.1)` — block until the TE line next goes high:
+  the start of a vertical-blanking window.  The primitive behind
+  `vsync=`; also usable directly to pace hand-rolled drawing.  Raises
+  `TimeoutError` when no TE pulse arrives.
+- `refresh_rate(samples=5, timeout=2.0)` → `(pclk_khz, hz)` — the
+  panel's actual clocks, measured: the frame rate directly from TE
+  pulses (median over `samples`), PCLK from `hz × HT × VT` (scan
+  totals read out of the init table).  The `0xE7` register does *not*
+  report a frequency on this chip.
+- `read_register(reg, n)` — read `n` bytes from a controller register
+  (`0xE7`, `0xB9`, ...), low byte of each 16-bit word.  Keep `n` small:
+  long reads drop words (see the `_read_words` caveat).
+- `crystal_guess(pclk_khz, init_table=INIT_UTFT)` (module function in
+  `ertftm070.display`) — name the crystal behind a measured pixel
+  clock (12 / 10 / 6.5 MHz), deriving the PLL math from the table's
+  own `0xE2`/`0xE6` entries.  Raises `ValueError` if the table lacks
+  them.
 
 **Diagnostics** (both return `bool` and log details)
 
@@ -86,9 +117,70 @@ Attributes: `width`, `height` (follow the rotation), `pins`, `rotation`.
 ## `Pins`
 
 Frozen dataclass of BCM GPIO numbers: `data_low` (DB0-7), `data_high`
-(DB8-15), `cs`, `dc`, `wr`, `rd`, `reset`, `backlight`. Validated on
-construction (unique, in range, 8+8 data pins). `DEFAULT_PINS` is the
-verified wiring; pass a custom `Pins(...)` to `Display` to rewire.
+(DB8-15), `cs`, `dc`, `wr`, `rd`, `reset`, `backlight`, `te`
+(default GPIO14; the panel's TE output on connector pin 8). Validated
+on construction (unique, in range, 8+8 data pins). `te=None` disables
+TE support: pin 8 left unwired, `0x35` skipped, the TE-based timing
+calls above raise. `DEFAULT_PINS` is the verified wiring; pass a custom
+`Pins(...)` to `Display` to rewire.
+
+## Touch (`ertftm070.touch`)
+
+The FT5x06-family controller on the panel (FT5206 on V2.1, FT5316 on
+V3 — same register map). I²C address 0x38 on I2C-1; the chip needs
+almost no init. `Display` and `Touch` share the bus — the fast backend
+is single-owner, so `Touch(lcd.bus)` is the only wiring, and the touch
+must be closed before its `Display`.
+
+```python
+from ertftm070 import Display
+from ertftm070.touch import Touch
+
+with Display() as lcd, Touch(lcd.bus) as touch:
+    for p in touch.read(mapped=True):
+        x, y = lcd.unmap_point(p.x, p.y)  # panel-native -> logical frame
+        lcd.fill_rect(x, y, 4, 4, 0xFFFF)
+```
+
+`Touch(bus, touch_pins=DEFAULT_TOUCH_PINS, calibration=DEFAULT_CALIBRATION,
+i2c=None)` — context manager, `open()` idempotent.
+
+- `read(mapped=False)` → `[TouchPoint]` — one TD_STATUS byte + one
+  6-byte record per touch; drops release events and the chip family's
+  bogus full-scale DOWN coordinates. `mapped=True` returns panel-native
+  coordinates via the calibration (always the 800×480 rotation-0
+  frame — pass them through `Display.unmap_point` when the display is
+  rotated). Raises if the touch is not open.
+- `wait_touch(timeout=None, poll_interval=0.02)` → `bool` — True when a
+  touch shows up, False on timeout.  Nothing hard-blocks: the INT pin
+  is read every `poll_interval` seconds (any level *change* confirms on
+  TD_STATUS; TD_STATUS is also confirmed on the first poll and every
+  ~200 ms, so a stuck or missing INT degrades to plain polling).  The
+  wake-on-touch primitive.
+- `reset()` — pulse `/RST` low ≥5 ms (Trst), wait 300 ms (Trsi), then
+  flush the first-report garbage. The recovery hammer for a wedged
+  chip. Raises if no `/RST` pin is configured.
+- `close()` — release the I²C bus.
+
+### `TouchPoint`
+
+Frozen dataclass: `x`, `y` (12-bit raw panel coordinates), `id`, `event`
+(`EVENT_DOWN`/`EVENT_CONTACT` — releases are dropped).
+
+### `TouchCalibration`
+
+Frozen dataclass mapping raw → panel-native coordinates: `width`
+(800), `height` (480), `raw_x_min/max` (0/799), `raw_y_min/max`
+(0/479) — the span measured on this panel — plus `swap_xy`,
+`mirror_x`, `mirror_y` for other mountings. `map(point)` does the
+conversion (clamped); `DEFAULT_CALIBRATION` is the measured one.
+
+### `TouchPins`
+
+Frozen dataclass of the touch GPIOs: `int_pin` (default 15), `rst_pin`
+(default 0); `None` disables a pin.  Validated on construction like
+`Pins` (range and INT//RST uniqueness); the pins must not collide with
+the display's `Pins` either.
 
 ## `rgb565(r, g, b)`
 

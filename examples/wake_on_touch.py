@@ -1,8 +1,9 @@
 """Sleep the panel, then wake it with a finger tap.
 
 The display goes dark (display off + backlight off) and the Pi waits
-on the touch chip — with the INT wire it waits on the pin, without it
-it polls TD_STATUS.  A tap brings the picture back.
+on the touch chip: ``wait_touch()`` watches the INT pin for a change
+(and confirms on TD_STATUS; polled every ~20 ms, never blocking) — with
+no INT wire it polls TD_STATUS directly.  A tap brings the picture back.
 
 Run: python3 examples/wake_on_touch.py
 Needs: the touch wires (docs/WIRING.md), I2C enabled.

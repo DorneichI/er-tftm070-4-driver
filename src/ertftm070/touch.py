@@ -27,7 +27,13 @@ Usage::
 
     with Display() as lcd, Touch(lcd.bus) as touch:
         for point in touch.read(mapped=True):
-            lcd.fill_rect(point.x, point.y, 4, 4, 0xFFFF)
+            x = min(point.x, lcd.width - 4)   # mapped points are panel-
+            y = min(point.y, lcd.height - 4)  # native: clamp like any draw
+            lcd.fill_rect(x, y, 4, 4, 0xFFFF)
+
+``mapped=True`` coordinates live in the panel-native frame — the frame
+the display draws in at ``rotation=0``.  On a rotated display, pass
+them through ``Display.unmap_point`` first (see there).
 
 ``Touch`` shares the :class:`~ertftm070.Display`'s bus for its GPIO
 pins — the fast backend is single-owner, so a second GPIO mapping
@@ -40,8 +46,15 @@ from dataclasses import dataclass
 
 from ._i2c import I2C
 from .backends import Bus
+from .pins import GPIO_MAX
 
 FT5X06_ADDR = 0x38
+
+# Coordinates at or above this are the chip family's "unpressed" /
+# unplaceable full-scale marker (0x0FFF), never a real position on any
+# FT5x06 panel regardless of its native span — see docs/COMMUNITY-
+# RESEARCH.md §6 and the kernel's "bogus coordinates in TOUCH_DOWN".
+_JUNK_COORD = 0x0FF0
 
 TD_STATUS = 0x02
 _POINT_BASES = (0x03, 0x09, 0x0F, 0x15, 0x1B)
@@ -160,11 +173,24 @@ class TouchPins:
 
     SCL/SDA are the fixed I2C-1 bus and WAKE is tied to 3.3 V in the
     verified wiring, so only INT and /RST are configurable — ``None``
-    disables a pin.
+    disables a pin.  Like :class:`~ertftm070.pins.Pins`, range and
+    self-uniqueness are validated at construction.  (The pins share
+    the display bus, so they must not collide with the display's
+    ``Pins`` either — keep that in mind for custom wirings.)
     """
 
     int_pin: int | None = 15
     rst_pin: int | None = 0
+
+    def __post_init__(self) -> None:
+        pins = [p for p in (self.int_pin, self.rst_pin) if p is not None]
+        bad = [p for p in pins if not 0 <= p <= GPIO_MAX]
+        if bad:
+            raise ValueError(
+                f"GPIO numbers out of range 0..{GPIO_MAX} (40-pin header): {bad}"
+            )
+        if len(pins) == 2 and pins[0] == pins[1]:
+            raise ValueError("INT and /RST must use different GPIOs")
 
 
 #: The wiring verified on hardware: INT on GPIO15, /RST on GPIO0.
@@ -186,6 +212,12 @@ class Touch:
             panel-native 0..799 × 0..479 span).
         i2c: Injectable I2C transport for tests; the default opens
             ``/dev/i2c-1`` at 0x38.
+
+    Lifecycle: close the touch before its Display — the context
+    manager pair ``with Display() as lcd, Touch(lcd.bus) as touch:``
+    exits in exactly that order.  Closing the Display first leaves a
+    live Touch whose I2C reads still work but whose pin operations
+    (INT, /RST) reach the released bus.
     """
 
     def __init__(
@@ -207,7 +239,10 @@ class Touch:
         """Bring the touch chip up: pins, I2C, settle, dummy read.
 
         Idempotent.  No register writes beyond ``0x00 = 0`` (working
-        mode) — the FT5x06 needs timing, not configuration.
+        mode) — the FT5x06 needs timing, not configuration.  The
+        ≥300 ms settle is only needed after a power-on/reset, so with
+        no /RST pin (nothing resets the chip here — the board's RC
+        reset long settled) it is skipped.
         """
         if self._opened:
             return
@@ -219,7 +254,8 @@ class Touch:
             b.pin_mode(self.touch_pins.int_pin, False)  # INT is an input
         self._i2c.open()
         # First report needs >=300 ms after power-on/reset (Tpon/Trsi).
-        time.sleep(0.3)
+        if self.touch_pins.rst_pin is not None:
+            time.sleep(0.3)  # RST was floating until just now: settle it
         self._i2c.read_reg(0x00, 1)  # dummy read: flush first-access garbage
         self._i2c.write_reg(0x00, b"\x00")  # device mode = working
         self._opened = True
@@ -238,7 +274,7 @@ class Touch:
     def _bus_checked(self) -> Bus:
         if self._bus is None:
             raise RuntimeError(
-                "Touch needs an open bus — pass the Display's bus (lcd._bus)"
+                "Touch needs an open bus — pass the Display's bus (lcd.bus)"
             )
         return self._bus
 
@@ -266,19 +302,18 @@ class Touch:
             return []
         records = self._i2c.read_reg(_POINT_BASES[0], count * 6)
         points = decode_points(records, count)
-        cal = self.calibration
+        # Full-scale coordinates are the family's "unpressed" marker, not
+        # a position on any panel — filter on the chip's own junk band
+        # rather than the calibration span, which may legitimately not
+        # cover the whole raw range on other mountings.
         points = [
             p
             for p in points
-            if not (
-                p.event == EVENT_DOWN
-                and not (
-                    cal.raw_x_min <= p.x <= cal.raw_x_max
-                    and cal.raw_y_min <= p.y <= cal.raw_y_max
-                )
-            )
+            if p.event != EVENT_DOWN
+            or (p.x < _JUNK_COORD and p.y < _JUNK_COORD)
         ]
         if mapped:
+            cal = self.calibration
             points = [cal.map(p) for p in points]
         return points
 
@@ -290,6 +325,13 @@ class Touch:
     ) -> bool:
         """Block until a touch is present, or return False on timeout.
 
+        Nothing here hard-blocks on the INT pin: it is *polled* every
+        ``poll_interval`` seconds (a plain GPIO read — the pin has no
+        edge-interrupt wait available on this bus model), so worst-case
+        wake latency is one ``poll_interval`` with or without it.  The
+        first poll confirms TD_STATUS unconditionally, so a finger
+        already resting on the panel when this is called is reported.
+
         INT polarity is firmware-dependent — measured on this panel
         (2026-09-06): the line idles LOW and rises HIGH during touches,
         the opposite of the datasheet's active-low convention — so any
@@ -300,9 +342,15 @@ class Touch:
         This is the wake-on-touch primitive::
 
             lcd.sleep()
-            touch.wait_touch()  # backlight off, waiting for a finger
+            lcd.backlight(False)
+            touch.wait_touch()  # display dark, waiting for a finger
+            lcd.backlight(True)
             lcd.wake()
         """
+        if not self._opened:
+            raise RuntimeError(
+                "touch not open — call open() or use the context manager"
+            )
         b = self._bus_checked()
         deadline = None if timeout is None else time.monotonic() + timeout
         int_pin = self.touch_pins.int_pin
@@ -312,9 +360,9 @@ class Touch:
             ticks += 1
             if int_pin is not None:
                 level = b.pin_read(int_pin)
-                edge = last is not None and level != last
+                edge = level != last  # any change: rising or falling
                 last = level
-                if (edge or ticks % 10 == 0) and self._has_touch():
+                if (ticks == 1 or edge or ticks % 10 == 0) and self._has_touch():
                     return True
             elif self._has_touch():
                 return True
@@ -325,7 +373,12 @@ class Touch:
     def reset(self) -> None:
         """Pulse /RST low ≥5 ms (Trst), then wait the 300 ms (Trsi) the
         chip needs before its first report — the recovery hammer for a
-        wedged FT5x06."""
+        wedged FT5x06.  Afterwards the first-report garbage is flushed
+        the same way :meth:`open` does, so the chip answers cleanly."""
+        if not self._opened:
+            raise RuntimeError(
+                "touch not open — call open() or use the context manager"
+            )
         if self.touch_pins.rst_pin is None:
             raise RuntimeError("no /RST pin configured (TouchPins.rst_pin is None)")
         b = self._bus_checked()
@@ -335,3 +388,4 @@ class Touch:
         time.sleep(0.01)
         b.pin_write(pin, True)
         time.sleep(0.3)
+        self._i2c.read_reg(0x00, 1)  # dummy read: flush first-access garbage

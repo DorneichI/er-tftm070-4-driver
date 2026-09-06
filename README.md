@@ -186,10 +186,16 @@ from ertftm070 import Display
 from ertftm070.touch import Touch
 
 with Display() as lcd, Touch(lcd.bus) as touch:
-    touch.wait_touch()               # wake-on-touch primitive
-    for p in touch.read(mapped=True):  # logical 800x480 coordinates
-        lcd.fill_rect(p.x, p.y, 4, 4, 0xFFFF)
+    touch.wait_touch()                # wake-on-touch primitive
+    for p in touch.read(mapped=True): # panel-native 800x480 coordinates
+        x = min(p.x, lcd.width - 4)   # mapped points can sit right at the
+        y = min(p.y, lcd.height - 4)  # edge — keep the mark on screen
+        lcd.fill_rect(x, y, 4, 4, 0xFFFF)
 ```
+
+`mapped=True` points live in the panel-native frame — the frame the
+display draws at `rotation=0`.  On a rotated display, pass them through
+`Display.unmap_point` first (see the touch module docs).
 
 ## Roadmap
 

@@ -24,6 +24,13 @@ def canvas(draw: ImageDraw.ImageDraw) -> None:
     draw.rectangle((0, 0, 799, 479), outline=(80, 80, 90))
 
 
+# Erase margin around each old mark: must cover the ellipse (±9) AND the
+# track-ID label (p.x + 11 … ~p.x + 19), or the label ghosts after the
+# finger lifts.  The blit region margin is this +2, so the erase and the
+# label both land inside the region that gets re-sent to the display.
+_ERASE = 20
+
+
 with Display() as lcd, Touch(lcd.bus) as touch:
     img = Image.new("RGB", (lcd.width, lcd.height))
     draw = ImageDraw.Draw(img)
@@ -37,7 +44,10 @@ with Display() as lcd, Touch(lcd.bus) as touch:
         mapped = [touch.calibration.map(p) for p in points]
         # erase the previous marks, then draw the new ones
         for x, y, _p_id in prev:
-            draw.rectangle((x - 10, y - 10, x + 10, y + 10), fill=(16, 16, 24))
+            draw.rectangle(
+                (x - _ERASE, y - _ERASE, x + _ERASE, y + _ERASE),
+                fill=(16, 16, 24),
+            )
         # the erase boxes also wipe the 1-px border under the finger
         # trail — restore it (the blit region covers these spots)
         draw.rectangle((0, 0, 799, 479), outline=(80, 80, 90))
@@ -57,7 +67,8 @@ with Display() as lcd, Touch(lcd.bus) as touch:
         if spots:
             xs = [x for x, _y in spots]
             ys = [y for _x, y in spots]
-            x0, x1 = max(min(xs) - 12, 0), min(max(xs) + 12, lcd.width - 1)
-            y0, y1 = max(min(ys) - 12, 0), min(max(ys) + 12, lcd.height - 1)
+            margin = _ERASE + 2
+            x0, x1 = max(min(xs) - margin, 0), min(max(xs) + margin, lcd.width - 1)
+            y0, y1 = max(min(ys) - margin, 0), min(max(ys) + margin, lcd.height - 1)
             region = img.crop((x0, y0, x1 + 1, y1 + 1))
             lcd.image(region, x0, y0)

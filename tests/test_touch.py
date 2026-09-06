@@ -17,12 +17,13 @@ from ertftm070.touch import (
 
 
 class FakeI2C:
-    """Records writes; read_reg answers from a per-register script."""
+    """Records writes and reads; read_reg answers from a per-register script."""
 
     def __init__(self):
         self.opened = False
         self.closed = False
         self.writes = []  # (reg, data bytes)
+        self.reads = []  # (reg, n) — every read_reg call
         self.responses = {}  # reg -> bytes
 
     def open(self):
@@ -36,6 +37,7 @@ class FakeI2C:
 
     def read_reg(self, reg, n):
         data = self.responses.get(reg, b"\x00" * n)
+        self.reads.append((reg, n))
         assert len(data) == n, f"FakeI2C script for 0x{reg:02X} is {n} bytes short"
         return data
 
@@ -174,7 +176,8 @@ def test_touch_read_parses_points_and_maps_them(bus):
 
 def test_touch_read_drops_bogus_down_frame(bus):
     # the kernel's "bogus coordinates in TOUCH_DOWN" quirk: a press whose
-    # position lies outside the calibrated raw span is dropped
+    # position is the full-scale "unpressed" marker (0x0FFF) is dropped —
+    # the chip-family rule, independent of the calibration span
     i2c = FakeI2C()
     i2c.responses[0x02] = b"\x01"
     i2c.responses[0x03] = bytes([0x0F, 0xFF, 0x2F, 0xFF, 0x00, 0x00])  # 4095,4095
@@ -185,6 +188,20 @@ def test_touch_read_drops_bogus_down_frame(bus):
     )
     t.open()
     assert t.read() == []
+
+
+def test_touch_read_keeps_sub_marker_down_frames(bus):
+    # the filter is the chip's full-scale junk band (_JUNK_COORD), NOT the
+    # calibration span: a DOWN below 0x0FF0 passes through raw — with the
+    # default calibration (span 0..799) it reads raw and maps clamped
+    i2c = FakeI2C()
+    i2c.responses[0x02] = b"\x01"
+    i2c.responses[0x03] = bytes([0x05, 0x00, 0x21, 0x00, 0x00, 0x00])  # 0x500,0x100
+    t = Touch(bus, i2c=i2c)
+    t.open()
+    assert t.read()[0].x == 0x500
+    mapped = t.read(mapped=True)[0]
+    assert (mapped.x, mapped.y) == (799, 256)  # clamped into the 0..799 span
 
 
 def test_touch_read_requires_open(bus):
@@ -219,6 +236,52 @@ def test_touch_wait_polls_status_without_int_pin(bus, monkeypatch):
     assert t.wait_touch(timeout=1.0) is False  # no touch ever arrives
 
 
+def test_touch_wait_catches_finger_resting_before_the_call(bus, monkeypatch):
+    # a finger already down must be caught on the FIRST poll: TD_STATUS
+    # is confirmed unconditionally at entry, with no INT edge and no
+    # ~200 ms safety-poll wait first
+    i2c = FakeI2C()
+    i2c.responses[0x02] = b"\x01"
+    t = Touch(bus, i2c=i2c)
+    t.open()
+    bus.pin_levels[t.touch_pins.int_pin] = False  # INT idle the whole time
+    slept = []
+    monkeypatch.setattr("ertftm070.touch.time.sleep", slept.append)
+    assert t.wait_touch(timeout=1.0) is True
+    assert slept == []  # returned on the first confirm, never polled
+
+
+def test_touch_wait_int_edge_triggers_immediate_status_confirm(bus, monkeypatch):
+    # status says "no touch" on the first poll; the moment INT changes,
+    # TD_STATUS is re-read and the pending touch is confirmed
+    import ertftm070.touch as touch_module
+
+    class TogglingI2C(FakeI2C):
+        def read_reg(self, reg, n):
+            if reg == 0x02:
+                self.status_reads += 1
+                self.responses[0x02] = b"\x01" if self.status_reads > 1 else b"\x00"
+            return super().read_reg(reg, n)
+
+    i2c = TogglingI2C()
+    i2c.status_reads = 0
+    t = Touch(bus, i2c=i2c)
+    t.open()
+    i2c.reads.clear()
+    bus.pin_read_script = [False, False, False, True]  # idle... then INT rises
+    monkeypatch.setattr(touch_module.time, "sleep", lambda s: None)
+    monkeypatch.setattr(touch_module.time, "monotonic", _FakeClock())
+    assert t.wait_touch(timeout=1.0) is True
+    # confirm on the edge, not on the every-10th-tick safety poll
+    assert i2c.reads.count((0x02, 1)) == 2
+
+
+def test_touch_wait_requires_open(bus):
+    t = Touch(bus, i2c=FakeI2C())
+    with pytest.raises(RuntimeError):
+        t.wait_touch(timeout=0.01)
+
+
 def test_touch_reset_pulses_rst_low_then_high(bus):
     i2c = FakeI2C()
     t = Touch(bus, i2c=i2c)
@@ -230,5 +293,36 @@ def test_touch_reset_pulses_rst_low_then_high(bus):
 
 def test_touch_reset_without_rst_pin_raises(bus):
     t = Touch(bus, touch_pins=TouchPins(int_pin=None, rst_pin=None), i2c=FakeI2C())
+    t.open()
     with pytest.raises(RuntimeError):
         t.reset()
+
+
+def test_touch_reset_requires_open(bus):
+    t = Touch(bus, i2c=FakeI2C())  # default TouchPins has /RST on GPIO0
+    with pytest.raises(RuntimeError):
+        t.reset()
+
+
+def test_touch_reset_flushes_first_report_garbage(bus):
+    # after a /RST pulse + Trsi wait the chip needs the same first-access
+    # flush open() does — reset() must leave it in a clean state
+    i2c = FakeI2C()
+    t = Touch(bus, i2c=i2c)
+    t.open()
+    i2c.reads.clear()
+    t.reset()
+    assert i2c.reads == [(0x00, 1)]
+
+
+def test_touch_pins_validates_range_and_uniqueness():
+    with pytest.raises(ValueError):
+        TouchPins(int_pin=28)  # beyond the 40-pin header (0..27)
+    with pytest.raises(ValueError):
+        TouchPins(rst_pin=31)
+    with pytest.raises(ValueError):
+        TouchPins(int_pin=5, rst_pin=5)  # INT and /RST must differ
+    # None disables a pin and skips validation of it
+    assert TouchPins(int_pin=None, rst_pin=None).int_pin is None
+    assert TouchPins().int_pin == 15
+    assert TouchPins().rst_pin == 0

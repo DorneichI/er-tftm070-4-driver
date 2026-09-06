@@ -248,6 +248,40 @@ def test_rotation_rejects_bad_values(display):
 
 
 @pytest.mark.parametrize(
+    "rotation,native,logical",
+    [
+        (0, (10, 20), (10, 20)),
+        (90, (0, 479), (0, 0)),  # native corners -> logical corners
+        (90, (799, 0), (479, 799)),
+        (180, (799, 479), (0, 0)),
+        (180, (10, 20), (789, 459)),
+        (270, (799, 0), (0, 0)),
+        (270, (0, 479), (479, 799)),  # logical corner inside the 480x800 frame
+    ],
+)
+def test_unmap_point_inverts_the_rotation_mapping(display, rotation, native, logical):
+    display.rotation = rotation
+    assert display.unmap_point(*native) == logical
+
+
+def test_unmap_point_roundtrips_the_whole_native_frame(display):
+    # every controller coordinate maps back to exactly one logical point,
+    # for every rotation (the identity used by touch at rotation=0 is a
+    # special case of the same rule)
+    from ertftm070.display import _map_point
+
+    for rotation in (0, 90, 180, 270):
+        display.rotation = rotation
+        for lx in range(0, display.width, 137):
+            for ly in range(0, display.height, 97):
+                native = _map_point(rotation, lx, ly)
+                assert display.unmap_point(*native) == (lx, ly)
+        # the far corners too (the stride above may skip them)
+        native = _map_point(rotation, display.width - 1, display.height - 1)
+        assert display.unmap_point(*native) == (display.width - 1, display.height - 1)
+
+
+@pytest.mark.parametrize(
     "rotation,rect,expected",
     [
         (0, (0, 0, 0, 0), (0, 0, 0, 0)),

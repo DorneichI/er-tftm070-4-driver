@@ -33,7 +33,10 @@ class Pins:
         backlight: backlight enable (high = on)
         te: tearing-effect output from the panel (connector pin 8) —
             an *input* the driver watches for vsync and refresh
-            measurement; wired to GPIO14 (phys 8)
+            measurement; wired to GPIO14 (phys 8).  ``None`` disables TE
+            support: pin 8 is left unwired, init skips ``0x35``, and
+            :meth:`~ertftm070.Display.vsync_wait` /
+            :meth:`~ertftm070.Display.refresh_rate` raise.
     """
 
     data_low: tuple[int, ...] = (4, 17, 27, 22, 5, 6, 13, 19)
@@ -44,13 +47,14 @@ class Pins:
     rd: int = 16
     reset: int = 12
     backlight: int = 25
-    te: int = 14
+    te: int | None = 14
 
     def __post_init__(self) -> None:
         pins = (
             list(self.data_low)
             + list(self.data_high)
-            + [self.cs, self.dc, self.wr, self.rd, self.reset, self.backlight, self.te]
+            + [self.cs, self.dc, self.wr, self.rd, self.reset, self.backlight]
+            + ([self.te] if self.te is not None else [])
         )
         if len(self.data_low) != 8 or len(self.data_high) != 8:
             raise ValueError("the 16-bit bus needs exactly 8 low + 8 high data pins")

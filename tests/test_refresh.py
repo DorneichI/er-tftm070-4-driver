@@ -5,6 +5,8 @@ import pytest
 
 import ertftm070.display as display_module
 from ertftm070.display import Display, crystal_guess
+from ertftm070.init import INIT_ALT, INIT_BD
+from ertftm070.pins import Pins
 from tests.conftest import FakeBus
 from tests.test_touch import _FakeClock
 
@@ -19,6 +21,20 @@ def test_crystal_guess_names_known_crystals():
     assert crystal_guess(31000) == "12 MHz"
     assert crystal_guess(16791) == "6.5 MHz"
     assert crystal_guess(20000).startswith("unknown")
+
+
+def test_crystal_guess_reads_the_clock_chain_from_any_table():
+    # INIT_ALT: PLL x12, FPR 0x0493E0 -> PCLK = ref x 3.4332 -> 34.333 MHz
+    assert crystal_guess(34333, INIT_ALT) == "10 MHz"
+    # INIT_BD: PLL x12, FPR 0x033333 -> PCLK = ref / 5 -> 24.0 MHz
+    assert crystal_guess(24000, INIT_BD) == "10 MHz"
+    # the utft pixel clock does not fit the alt table's chain -> unknown
+    assert crystal_guess(25833, INIT_ALT).startswith("unknown")
+
+
+def test_crystal_guess_requires_the_clock_entries():
+    with pytest.raises(ValueError):
+        crystal_guess(20000, [])
 
 
 # ----------------------------------------------------------------------
@@ -64,6 +80,19 @@ def test_blit_rows_with_vsync_waits_per_row(display, bus):
     assert [c for c in bus.row_blit_calls] == [(0, 1, 0), (0, 1, 1), (0, 1, 2)]
 
 
+def test_blit_rows_with_vsync_waits_for_a_fresh_window(display, bus):
+    # a vsynced row must start at a FRESH blanking start: TE high at the
+    # call (a window already in progress) is not enough — the driver
+    # waits for the fall, then the next rise
+    display.open()
+    bus.pin_read_script = [True, False, True, False, True]
+    display.fill_rect(0, 0, 2, 1, 0xF800, vsync=True)
+    # high (in progress), low, high consumed for the one row's window;
+    # the second pulse is left unconsumed
+    assert bus.pin_read_script == [False, True]
+    assert [c for c in bus.row_blit_calls] == [(0, 1, 0)]
+
+
 def test_blit_rows_without_vsync_does_not_wait(display, bus):
     display.open()
     display.fill_rect(0, 0, 2, 3, 0xF800)  # default: no TE gating
@@ -101,3 +130,27 @@ def test_refresh_rate_times_out_without_te(display, bus, monkeypatch):
     monkeypatch.setattr(display_module.time, "monotonic", _FakeClock())
     with pytest.raises(TimeoutError):
         display.refresh_rate(samples=2, timeout=0.1)
+
+
+def test_refresh_rate_needs_at_least_two_samples(display, bus):
+    display.open()
+    with pytest.raises(ValueError):
+        display.refresh_rate(samples=1)
+
+
+def test_te_none_skips_0x35_and_raises_for_te_timing(bus, monkeypatch):
+    # Pins.te=None means no TE wire: init must not enable 0x35 (the pin
+    # is not configured either), and TE-based timing raises RuntimeError
+    # instead of hanging on a pin nobody wired
+    monkeypatch.setattr(display_module.time, "sleep", lambda s: None)
+    d = Display(pins=Pins(te=None), backend=bus)
+    d.open()
+    assert 0x35 not in bus.commands()
+    assert 14 not in bus.pin_modes  # TE GPIO never touched
+    with pytest.raises(RuntimeError):
+        d.vsync_wait()
+    with pytest.raises(RuntimeError):
+        d.refresh_rate()
+    # the rest of the drawing API is unaffected
+    d.fill(0)
+    assert len(bus.row_blit_calls) == d.height

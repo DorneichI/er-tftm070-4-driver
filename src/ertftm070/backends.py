@@ -401,6 +401,7 @@ class _MmioBus:
         self._write_word(_GPSET0 if level else _GPCLR0, 1 << pin)
 
     def pin_read(self, pin: int) -> bool:
+        self._check()  # a closed bus must raise here, like every pin op
         return bool(self._read_word_reg(_GPLEV0) & (1 << pin))
 
     def write_byte(self, value: int) -> None:

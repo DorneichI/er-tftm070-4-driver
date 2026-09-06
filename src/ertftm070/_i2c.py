@@ -8,12 +8,20 @@ lives in :mod:`ertftm070.touch` above it.
 """
 from __future__ import annotations
 
-import fcntl
 import os
 
 from .errors import Ertftm070Error
 
 _I2C_SLAVE = 0x0703  # linux/i2c-dev.h
+
+# Wiring hints appended to every bus-level failure: an absent or wedged
+# FT5x06 can look like almost any OSError, so point at what actually
+# differs from a working setup.
+_WIRE_HINT = (
+    "check the SCL/SDA wiring (docs/WIRING.md) and that CTP_WAKE is "
+    "tied to 3.3 V — a hibernating FT5x06 answers at ghost addresses, "
+    "not 0x38"
+)
 
 
 class I2CError(Ertftm070Error):
@@ -22,7 +30,9 @@ class I2CError(Ertftm070Error):
     Usual causes, in order of likelihood: I2C not enabled
     (``dtparam=i2c_arm=on`` + reboot), SCL/SDA swapped, or the touch
     chip hibernating because CTP_WAKE (pin 37) is not tied to 3.3 V —
-    in that state it answers at ghost addresses instead of 0x38.
+    in that state it answers at ghost addresses instead of 0x38.  An
+    absent slave only shows up on the first read or write, never on
+    :meth:`I2C.open` — that ioctl only sets the address.
     """
 
 
@@ -46,13 +56,17 @@ class I2C:
                 "`dtparam=i2c_arm=on` and reboot (see docs/WIRING.md)"
             ) from exc
         try:
+            # fcntl is POSIX-only; importing it at module top would break
+            # the documented contract that importing the package works
+            # off-Linux.  os.open above already failed there (no
+            # /dev/i2c-N device), so this import only ever runs on Linux.
+            import fcntl
+
             fcntl.ioctl(fd, _I2C_SLAVE, self.addr)
         except OSError as exc:
             os.close(fd)
             raise I2CError(
-                f"no slave at 0x{self.addr:02X} on {self.path}: {exc} — "
-                "check SCL/SDA wiring and that CTP_WAKE is tied to 3.3 V "
-                "(a hibernating FT5x06 answers at ghost addresses, not 0x38)"
+                f"cannot select slave 0x{self.addr:02X} on {self.path}: {exc}"
             ) from exc
         self._fd = fd
 
@@ -79,20 +93,25 @@ class I2C:
         try:
             written = os.write(self._check(), payload)
         except OSError as exc:
-            raise I2CError(f"I2C write to 0x{self.addr:02X} failed: {exc}") from exc
+            raise I2CError(
+                f"I2C write to 0x{self.addr:02X} failed: {exc} — {_WIRE_HINT}"
+            ) from exc
         if written != len(payload):
             raise I2CError(
                 f"I2C write to 0x{self.addr:02X} short: "
-                f"{written}/{len(payload)} bytes"
+                f"{written}/{len(payload)} bytes — {_WIRE_HINT}"
             )
 
     def _read(self, n: int) -> bytes:
         try:
             data = os.read(self._check(), n)
         except OSError as exc:
-            raise I2CError(f"I2C read from 0x{self.addr:02X} failed: {exc}") from exc
+            raise I2CError(
+                f"I2C read from 0x{self.addr:02X} failed: {exc} — {_WIRE_HINT}"
+            ) from exc
         if len(data) != n:
             raise I2CError(
-                f"I2C read from 0x{self.addr:02X} short: {len(data)}/{n} bytes"
+                f"I2C read from 0x{self.addr:02X} short: {len(data)}/{n} bytes "
+                f"— {_WIRE_HINT}"
             )
         return data

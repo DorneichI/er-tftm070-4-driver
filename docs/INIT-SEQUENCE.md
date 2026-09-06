@@ -27,7 +27,7 @@ right after init), and `0x36 = 0x08` (BGR color order).
 | 17 | `0xBE` = `06 F0 01 F0 00 00` | Backlight PWM config (only matters if backlight were board-controlled; harmless here) |
 | 18 | `0xD0` = `0D` | Dynamic backlight control config (harmless here) |
 | 19 | `0x3A` = `50` | **16 bits per pixel.** Set after display-on in the driver; the POR value is "reserved" and misbehaves on some chips. |
-| 20 | `0x35` = `00` | **Tearing effect on**, V-blanking only. A driver-level addition — no community table sets it (see docs/COMMUNITY-RESEARCH.md §5). Feeds `Display.vsync_wait()` and `refresh_rate()` via the TE pin (connector pin 8). |
+| 20 | `0x35` = `00` | **Tearing effect on**, V-blanking only. A driver-level addition — no community table sets it (see docs/COMMUNITY-RESEARCH.md §5). Feeds `Display.vsync_wait()` and `refresh_rate()` via the TE pin (connector pin 8). Skipped when `Pins.te` is `None` (no TE wire) — `vsync_wait()`/`refresh_rate()` then raise. |
 
 Then, to draw: `0x2A` (column window) → `0x2B` (row window) → `0x2C`
 (memory write) → stream one 16-bit pixel per WR strobe, low byte on
