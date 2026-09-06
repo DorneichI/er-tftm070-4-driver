@@ -2,6 +2,8 @@
 against fakes.  Frame layouts come from docs/COMMUNITY-RESEARCH.md §6."""
 from __future__ import annotations
 
+import logging
+
 import pytest
 
 from ertftm070.touch import (
@@ -11,6 +13,7 @@ from ertftm070.touch import (
     TouchCalibration,
     TouchPins,
     TouchPoint,
+    _records_sane,
     decode_points,
     decode_status,
 )
@@ -24,7 +27,9 @@ class FakeI2C:
         self.closed = False
         self.writes = []  # (reg, data bytes)
         self.reads = []  # (reg, n) — every read_reg call
-        self.responses = {}  # reg -> bytes
+        # reg -> bytes, or list[bytes]: a script, one answer popped per
+        # read; once dry it falls back to the all-zero default (sane).
+        self.responses = {}
 
     def open(self):
         self.opened = True
@@ -37,6 +42,8 @@ class FakeI2C:
 
     def read_reg(self, reg, n):
         data = self.responses.get(reg, b"\x00" * n)
+        if isinstance(data, list):
+            data = data.pop(0) if data else b"\x00" * n
         self.reads.append((reg, n))
         assert len(data) == n, f"FakeI2C script for 0x{reg:02X} is {n} bytes short"
         return data
@@ -150,6 +157,85 @@ def test_touch_open_skips_none_pins(bus):
     t = Touch(bus, touch_pins=TouchPins(int_pin=None, rst_pin=None), i2c=i2c)
     t.open()
     assert bus.pin_modes == {}
+
+
+# Five contact records with finger id 6 (> 4) each — the phantom
+# power-on signature the bench showed under TD_STATUS 0x35.
+_PHANTOM_RECORDS = bytes([0x80, 0x00, 0x60, 0x00, 0x00, 0x00]) * 5
+
+
+def test_records_sane_rejects_impossible_ids_and_truncation():
+    good = bytes([0x03, 0x00, 0x21, 0x00, 0x00, 0x00])  # finger id 2
+    phantom = bytes([0x83, 0x00, 0x61, 0x00, 0x00, 0x00])  # id 6
+    assert _records_sane(good * 5, 5) is True
+    assert _records_sane(phantom * 5, 5) is False
+    assert _records_sane(good * 2 + phantom + good * 2, 5) is False
+    assert _records_sane(good * 2, 5) is False  # truncated record stream
+
+
+def test_touch_open_pulses_rst_low_then_high_with_settle_sleeps(bus, monkeypatch):
+    i2c = FakeI2C()
+    t = Touch(bus, i2c=i2c)
+    wrote = []
+    original = bus.pin_write
+
+    def record(pin, level):
+        wrote.append((pin, bool(level)))
+        original(pin, level)
+
+    monkeypatch.setattr(bus, "pin_write", record)
+    slept = []
+    monkeypatch.setattr("ertftm070.touch.time.sleep", slept.append)
+    t.open()
+    rst = t.touch_pins.rst_pin
+    assert wrote == [(rst, True), (rst, False), (rst, True)]  # high->low pulse
+    assert slept == [0.01, 0.3]  # Trst hold, then Trsi settle — no poll sleep
+
+
+def test_touch_open_waits_out_phantom_status(bus, monkeypatch):
+    # 0x35 = five touches; the records carry impossible finger ids (6).
+    # The phantom must be polled to exhaustion before open() proceeds.
+    i2c = FakeI2C()
+    i2c.responses[0x02] = [b"\x35", b"\x35", b"\x35", b"\x00"]
+    i2c.responses[0x03] = [_PHANTOM_RECORDS, _PHANTOM_RECORDS, _PHANTOM_RECORDS]
+    t = Touch(bus, i2c=i2c)
+    _patch_time(monkeypatch)
+    t.open()
+    assert t._opened is True
+    assert i2c.writes == [(0x00, b"\x00")]
+    assert i2c.reads.count((0x02, 1)) == 4  # 3 phantom + 1 clean
+    assert i2c.reads.count((0x03, 30)) == 3
+
+
+def test_touch_open_phantom_forever_warns_once_and_succeeds(
+    bus, monkeypatch, caplog
+):
+    import ertftm070.touch as touch_module
+
+    i2c = FakeI2C()
+    i2c.responses[0x02] = b"\x35"  # constant: phantom forever
+    i2c.responses[0x03] = _PHANTOM_RECORDS
+    monkeypatch.setattr(touch_module, "_warned_phantom", False)
+    t = Touch(bus, i2c=i2c)
+    _patch_time(monkeypatch)
+    with caplog.at_level(logging.WARNING, logger="ertftm070"):
+        t.open()
+        # a second instance hitting the same phantom must stay silent
+        t2 = Touch(bus, i2c=i2c)
+        t2.open()
+    assert t._opened is True and t2._opened is True
+    assert i2c.reads.count((0x02, 1)) >= 40  # polled the full ~5 s budget
+    phantom = [r for r in caplog.records if "phantom" in r.getMessage()]
+    assert len(phantom) == 1  # once per process
+
+
+def test_touch_open_sane_chip_polls_status_exactly_once(bus, monkeypatch):
+    i2c = FakeI2C()  # all registers read 0x00: healthy
+    t = Touch(bus, i2c=i2c)
+    _patch_time(monkeypatch)
+    t.open()
+    # dummy flush read, then one sanity TD_STATUS — no record reads, no sleep
+    assert i2c.reads == [(0x00, 1), (0x02, 1)]
 
 
 def test_touch_read_empty_status_gives_no_points(bus):
@@ -267,7 +353,10 @@ def test_touch_wait_int_edge_triggers_immediate_status_confirm(bus, monkeypatch)
     i2c.status_reads = 0
     t = Touch(bus, i2c=i2c)
     t.open()
+    # open()'s sanity poll consumed one 0x02 read — restart the script so
+    # the wait phase sees "no touch" first again
     i2c.reads.clear()
+    i2c.status_reads = 0
     bus.pin_read_script = [False, False, False, True]  # idle... then INT rises
     monkeypatch.setattr(touch_module.time, "sleep", lambda s: None)
     monkeypatch.setattr(touch_module.time, "monotonic", _FakeClock())
@@ -306,13 +395,31 @@ def test_touch_reset_requires_open(bus):
 
 def test_touch_reset_flushes_first_report_garbage(bus):
     # after a /RST pulse + Trsi wait the chip needs the same first-access
-    # flush open() does — reset() must leave it in a clean state
+    # flush open() does — reset() must leave it in a clean state, and it
+    # sanity-polls TD_STATUS afterwards (healthy: one 0x00 read)
     i2c = FakeI2C()
     t = Touch(bus, i2c=i2c)
     t.open()
     i2c.reads.clear()
     t.reset()
-    assert i2c.reads == [(0x00, 1)]
+    assert i2c.reads == [(0x00, 1), (0x02, 1)]
+
+
+def test_touch_reset_waits_out_phantom_status(bus, monkeypatch):
+    i2c = FakeI2C()
+    t = Touch(bus, i2c=i2c)
+    _patch_time(monkeypatch)
+    t.open()
+    i2c.reads.clear()
+    i2c.responses[0x02] = [b"\x35", b"\x00"]
+    i2c.responses[0x03] = [_PHANTOM_RECORDS]
+    t.reset()
+    assert i2c.reads == [
+        (0x00, 1),  # dummy flush
+        (0x02, 1),  # phantom status
+        (0x03, 30),  # its records (ids 6: not sane)
+        (0x02, 1),  # clean on the next poll
+    ]
 
 
 def test_touch_pins_validates_range_and_uniqueness():
