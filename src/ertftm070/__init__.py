@@ -29,6 +29,7 @@ from .display import Display
 from .errors import Ertftm070Error, NotOnRaspberryPi
 from .init import INIT_ALT, INIT_BD, INIT_UTFT
 from .pins import DEFAULT_PINS, Pins
+from .touch import Touch, TouchCalibration, TouchPoint
 
 try:
     __version__ = version("ertftm070")
@@ -47,6 +48,9 @@ __all__ = [
     "INIT_BD",
     "Ertftm070Error",
     "NotOnRaspberryPi",
+    "Touch",
+    "TouchPoint",
+    "TouchCalibration",
     "BACKEND",
     "__version__",
 ]
