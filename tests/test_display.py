@@ -325,6 +325,27 @@ def test_backlight_off_via_constructor():
     assert bus.pin_levels[bus.pins.backlight] is False
 
 
+def test_blit_rows_one_row_blit_call_per_row(display, bus):
+    display.open()
+    display.fill_rect(10, 20, 3, 4, 0xF800)
+    # controller-space coordinates, one backend call per row
+    assert bus.row_blit_calls == [
+        (10, 12, 20),
+        (10, 12, 21),
+        (10, 12, 22),
+        (10, 12, 23),
+    ]
+
+
+def test_row_blit_honors_write_passes_order(bus):
+    display = Display(backend=bus, write_passes=2)
+    display.open()
+    bus.row_blit_calls.clear()
+    display.fill_rect(0, 0, 2, 2, 0x07E0)
+    # pass 1 covers all rows before pass 2 repeats them
+    assert bus.row_blit_calls == [(0, 1, 0), (0, 1, 1), (0, 1, 0), (0, 1, 1)]
+
+
 def test_write_passes_doubles_the_streams():
     bus = FakeBus()
     display = Display(backend=bus, write_passes=2)

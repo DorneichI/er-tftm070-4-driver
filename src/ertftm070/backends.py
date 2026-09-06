@@ -151,6 +151,18 @@ class Bus(Protocol):
         caller's job.
         """
 
+    def row_blit(self, x0: int, x1: int, y: int, buf: Any) -> None:
+        """One row of a blit, including CS/DC framing: the 0x2A/0x2B
+        window for columns ``x0..x1`` on row ``y`` (controller-space
+        coordinates), 0x2C, the pixel burst, and the 2 trailing dummies.
+
+        Byte-for-byte the same bus traffic as window commands + a
+        ``pixel_stream``, but one call instead of ~27 — the Python<->C
+        round trips per row dominated small-blit latency.  Row
+        granularity is kept: the SSD1963's swallowed-write-word quirk
+        (see docs/LESSONS.md) is contained to one row per burst.
+        """
+
 
 # ----------------------------------------------------------------------
 # Backend selection (once, at import time)
@@ -247,6 +259,10 @@ class _FastioBus:
 
     def pixel_stream(self, buf: Any) -> None:
         self._mod().pixel_stream(buf)
+
+    def row_blit(self, x0: int, x1: int, y: int, buf: Any) -> None:
+        """One row (window + burst + CS/DC framing) in a single C call."""
+        self._mod().row_blit(self.pins.cs, self.pins.dc, x0, x1, y, buf)
 
 
 # ----------------------------------------------------------------------
@@ -368,6 +384,36 @@ class _MmioBus:
             mm[gpset : gpset + 4] = pack("<I", last)
             mm[gpclr : gpclr + 4] = wr_b
             mm[gpset : gpset + 4] = wr_b
+
+    def row_blit(self, x0: int, x1: int, y: int, buf: Any) -> None:
+        """One row of a blit with CS/DC framing, composed from the same
+        primitives the fast backend strokes in C (slower per call, same
+        traffic)."""
+        self._check()
+        cs, dc = self.pins.cs, self.pins.dc
+
+        def _command(cmd: int) -> None:
+            self.pin_write(cs, False)
+            self.pin_write(dc, False)
+            self.write_byte(cmd)
+            self.pin_write(cs, True)
+
+        def _data(values) -> None:
+            self.pin_write(cs, False)
+            self.pin_write(dc, True)
+            for v in values:
+                self.write_byte(v)
+            self.pin_write(cs, True)
+
+        _command(0x2A)  # column window
+        _data((x0 >> 8, x0 & 0xFF, x1 >> 8, x1 & 0xFF))
+        _command(0x2B)  # row window
+        _data((y >> 8, y & 0xFF, y >> 8, y & 0xFF))
+        _command(0x2C)  # memory write
+        self.pin_write(cs, False)
+        self.pin_write(dc, True)
+        self.pixel_stream(buf)
+        self.pin_write(cs, True)
 
 
 def _byte_mask(value: int, pins) -> int:

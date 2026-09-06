@@ -186,6 +186,22 @@ def test_mmio_pixel_stream_accepts_word_buffers_too():
     assert len(mm.writes) == 12
 
 
+def test_mmio_row_blit_windows_then_streams():
+    bus, mm = _mmio_bus()
+    bus.row_blit(0, 2, 0, array("H", [0xF800, 0x07E0]))
+    sets = [w[1] for w in mm.writes if w[0] == _GPSET0]
+    assert sets.index(struct.pack("<I", bus._set_low[0x2A])) < \
+        sets.index(struct.pack("<I", bus._set_low[0x2B])) < \
+        sets.index(struct.pack("<I", bus._set_low[0x2C]))
+    # pixel data (0xF800 = low byte 0x00, high byte 0xF8) follows 0x2C
+    pixel_set = struct.pack("<I", bus._set_low[0x00] | bus._set_high[0xF8])
+    assert sets.index(pixel_set) > sets.index(struct.pack("<I", bus._set_low[0x2C]))
+    # 11 window bytes + 2 real + 2 dummy pixels, one WR-low strobe each
+    wr = struct.pack("<I", bus._wr)
+    wr_low = [w[1] for w in mm.writes if w[0] == _GPCLR0 and w[1] == wr]
+    assert len(wr_low) == 11 + 4
+
+
 def test_mmio_read_word_samples_and_restores_outputs():
     bus, mm = _mmio_bus()
     # controller drives DB0 (pin 4), DB11 (pin 10), DB15 (pin 24) high

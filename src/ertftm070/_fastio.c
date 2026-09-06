@@ -338,6 +338,108 @@ static PyObject *py_read_word(PyObject *self, PyObject *noargs)
     return PyLong_FromLong((long)bus_read_word());
 }
 
+/* row_blit(cs, dc, x0, x1, y, buffer): one row of a blit in a single C
+ * call — 0x2A column window, 0x2B row window, 0x2C memory write, the
+ * pixel burst with its 2 trailing dummies, and all CS/DC framing.
+ *
+ * The bus traffic is byte-for-byte identical to what the Python row
+ * loop used to generate (CS toggles between the command groups, held
+ * low through the burst) — the win is collapsing ~27 Python<->C round
+ * trips per row into one, which dominated small-blit latency
+ * (~900 us/row measured on a Pi Zero W, vs ~190 us of actual strobes).
+ *
+ * x0/x1/y are controller-space coordinates; the caller maps rotation.
+ */
+static PyObject *py_row_blit(PyObject *self, PyObject *args)
+{
+    Py_buffer view;
+    int cs, dc, x0, x1, y;
+    uint32_t cs_mask, dc_mask, set, last_set = 0;
+    const uint8_t *p;
+    Py_ssize_t i, n;
+
+    if (check_open() < 0)
+        return NULL;
+    if (!PyArg_ParseTuple(args, "iiiiiy*:row_blit", &cs, &dc, &x0, &x1, &y, &view))
+        return NULL;
+    if (cs < 0 || cs >= GPIO_MAX || dc < 0 || dc >= GPIO_MAX ||
+        x0 < 0 || x0 > 0xFFFF || x1 < 0 || x1 > 0xFFFF || y < 0 || y > 0xFFFF) {
+        PyBuffer_Release(&view);
+        PyErr_SetString(PyExc_ValueError,
+            "row_blit: cs/dc must be GPIO 0..31 and coordinates 0..65535");
+        return NULL;
+    }
+    if (view.len % 2) {
+        PyBuffer_Release(&view);
+        PyErr_SetString(PyExc_ValueError,
+                        "buffer length must be even (one 16-bit word per pixel)");
+        return NULL;
+    }
+    if (!masks_ready)
+        init_masks();
+    calibrate();
+    cs_mask = 1u << cs;
+    dc_mask = 1u << dc;
+
+    /* 0x2A column window */
+    gpio[GPCLR0] = cs_mask;
+    gpio[GPCLR0] = dc_mask;
+    bus_write_byte(0x2A);
+    gpio[GPSET0] = dc_mask;
+    bus_write_byte((uint8_t)(x0 >> 8));
+    bus_write_byte((uint8_t)(x0 & 0xFF));
+    bus_write_byte((uint8_t)(x1 >> 8));
+    bus_write_byte((uint8_t)(x1 & 0xFF));
+    gpio[GPSET0] = cs_mask;
+    /* 0x2B row window */
+    gpio[GPCLR0] = cs_mask;
+    gpio[GPCLR0] = dc_mask;
+    bus_write_byte(0x2B);
+    gpio[GPSET0] = dc_mask;
+    bus_write_byte((uint8_t)(y >> 8));
+    bus_write_byte((uint8_t)(y & 0xFF));
+    bus_write_byte((uint8_t)(y >> 8));
+    bus_write_byte((uint8_t)(y & 0xFF));
+    gpio[GPSET0] = cs_mask;
+    /* 0x2C memory write */
+    gpio[GPCLR0] = cs_mask;
+    gpio[GPCLR0] = dc_mask;
+    bus_write_byte(0x2C);
+    gpio[GPSET0] = cs_mask;
+    /* pixel burst, CS held low */
+    gpio[GPCLR0] = cs_mask;
+    gpio[GPSET0] = dc_mask;
+    n = view.len / 2;
+    p = (const uint8_t *)view.buf;
+    for (i = 0; i < n; i++) {
+        uint16_t w;
+        memcpy(&w, p + i * 2, 2);
+        set = set_low[w & 0xFF] | set_high[w >> 8];
+        last_set = set;
+        gpio[GPCLR0] = clr_all;      /* all 16 data pins low */
+        gpio[GPSET0] = set;          /* pixel bits valid */
+        spin();
+        gpio[GPCLR0] = wr_mask;      /* WR low: write cycle starts */
+        spin();
+        gpio[GPSET0] = wr_mask;      /* WR high: pixel latched */
+        spin();
+    }
+    /* 2 trailing dummy pixels (same value as the last real pixel,
+     * matching the verified legacy/fill.c behaviour). */
+    for (i = 0; i < 2; i++) {
+        gpio[GPCLR0] = clr_all;
+        gpio[GPSET0] = last_set;
+        spin();
+        gpio[GPCLR0] = wr_mask;
+        spin();
+        gpio[GPSET0] = wr_mask;
+        spin();
+    }
+    gpio[GPSET0] = cs_mask;
+    PyBuffer_Release(&view);
+    Py_RETURN_NONE;
+}
+
 /* pixel_stream(buffer): one WR strobe per 16-bit word (bit 0 on DB0),
  * plus the 2 trailing dummy pixels that absorb this chip's burst-tail
  * quirk (the final ~1.5 pixels of a burst are lost when CS releases). */
@@ -409,6 +511,9 @@ static PyMethodDef methods[] = {
      "write_byte(value) — one register byte on DB0-7 with a WR strobe."},
     {"read_word", py_read_word, METH_NOARGS,
      "read_word() — sample 16 bits on DB0-15 with an RD strobe."},
+    {"row_blit", py_row_blit, METH_VARARGS,
+     "row_blit(cs, dc, x0, x1, y, buffer) — one row: 0x2A/0x2B window, "
+     "0x2C, pixel burst with 2 trailing dummies, all in one call."},
     {"pixel_stream", py_pixel_stream, METH_O,
      "pixel_stream(buffer) — one WR strobe per 16-bit word, plus 2 trailing dummies."},
     {NULL, NULL, 0, NULL},

@@ -311,26 +311,19 @@ class Display:
         by its own 2 trailing dummy pixels.  With ``write_passes`` > 1
         every row is written again, healing most swallowed words (a word
         must be swallowed in *every* pass to stay wrong).
+
+        Each row is one ``Bus.row_blit`` call — window commands, burst
+        and CS/DC framing in a single backend call (a single C call on
+        the fast backend), instead of the ~27 per-row calls that
+        dominated small-blit latency.
         """
         width = x1 - x0 + 1
         view = memoryview(buf)
+        b = self._bus_checked()
         for _pass in range(self._write_passes):
             for row in range(y1 - y0 + 1):
-                self._command(0x2A)  # column window
-                self._data_list(
-                    [(x0 >> 8) & 0xFF, x0 & 0xFF, (x1 >> 8) & 0xFF, x1 & 0xFF]
-                )
                 yy = y0 + row
-                self._command(0x2B)  # row window (a single row)
-                self._data_list(
-                    [(yy >> 8) & 0xFF, yy & 0xFF, (yy >> 8) & 0xFF, yy & 0xFF]
-                )
-                self._command(0x2C)  # memory write
-                b = self._bus_checked()
-                b.pin_write(self.pins.cs, False)
-                b.pin_write(self.pins.dc, True)
-                b.pixel_stream(view[row * width : (row + 1) * width])
-                b.pin_write(self.pins.cs, True)
+                b.row_blit(x0, x1, yy, view[row * width : (row + 1) * width])
 
     def _check_bounds(self, x: int, y: int, w: int, h: int) -> None:
         if w <= 0 or h <= 0:
