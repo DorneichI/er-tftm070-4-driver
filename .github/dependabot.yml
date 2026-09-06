@@ -1,0 +1,23 @@
+version: 2
+updates:
+  # Python dependencies (pyproject.toml): the dev extras + the Pillow extra.
+  - package-ecosystem: pip
+    directory: /
+    schedule:
+      interval: weekly
+    groups:
+      python-deps:
+        applies-to: version-updates
+        patterns:
+          - "*"
+    open-pull-requests-limit: 10
+
+  # The actions CI and CodeQL depend on.
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+    groups:
+      github-actions:
+        patterns:
+          - "*"
