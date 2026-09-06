@@ -21,18 +21,20 @@ def test_bars_draws_eight_rects(bus):
     display = _fake_display(bus)
     display.open()
     assert run(_args(["bars"]), display=display) == 0
-    assert len(bus.streams) == len(BARS)
+    # 8 bars x one burst per row
+    assert len(bus.streams) == len(BARS) * display.height
     w = display.width // 8
-    assert bus.streams[0] == [0x0000] * (w * display.height)
-    assert bus.streams[7] == [0xF81F] * (w * display.height)
+    assert bus.streams[0] == [0x0000] * w  # first row of the black bar
+    assert bus.streams[-1] == [0xF81F] * w  # last row of the magenta bar
 
 
 def test_fill_parses_hex_color(bus):
     display = _fake_display(bus)
     display.open()
     assert run(_args(["fill", "F800"]), display=display) == 0
-    assert set(bus.streams[-1]) == {0xF800}
-    assert len(bus.streams[-1]) == 800 * 480
+    assert len(bus.streams) == 480  # one burst per row
+    assert all(len(s) == 800 for s in bus.streams)
+    assert all(set(s) == {0xF800} for s in bus.streams)
 
 
 def test_selftest_exit_codes(bus):
@@ -70,8 +72,8 @@ def test_image_subcommand(bus):
         import os
 
         os.unlink(path)
-    assert len(bus.streams[-1]) == 4
-    assert set(bus.streams[-1]) == {0x07E0}
+    assert len(bus.streams) == 2  # 2x2 image: one burst per row
+    assert [w for s in bus.streams for w in s] == [0x07E0] * 4
 
 
 def test_parser_requires_a_command():

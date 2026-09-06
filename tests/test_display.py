@@ -41,24 +41,29 @@ def test_init_writes_f0_and_post_init_3a(display, bus):
 def test_fill_rect_window_and_stream(display, bus):
     display.open()
     display.fill_rect(0, 0, 100, 50, 0xF800)
-    # one continuous stream, exactly w*h words
-    assert len(bus.streams) == 1
-    assert len(bus.streams[0]) == 100 * 50
-    assert set(bus.streams[0]) == {0xF800}
-    # window command: 0x2A then 4 data bytes (x0=0, x1=99)
+    # one burst PER ROW (contains a swallowed word to a single row)
+    assert len(bus.streams) == 50
+    assert all(len(s) == 100 for s in bus.streams)
+    assert all(set(s) == {0xF800} for s in bus.streams)
+    # first row's window: 0x2A then 4 data bytes (x0=0, x1=99), 0x2B (y0=y1=0)
     stream = bus.bytes_written
     i = stream.index((False, 0x2A))
     assert [b for _, b in stream[i + 1 : i + 5]] == [0x00, 0x00, 0x00, 99]
     j = stream.index((False, 0x2B))
-    assert [b for _, b in stream[j + 1 : j + 5]] == [0x00, 0x00, 0x00, 49]
-    # and the memory-write command before the stream
+    assert [b for _, b in stream[j + 1 : j + 5]] == [0x00, 0x00, 0x00, 0x00]
+    # last row's window: y0=y1=49
+    last = [k for k, (dc, b) in enumerate(stream) if dc is False and b == 0x2B][-1]
+    assert [b for _, b in stream[last + 1 : last + 5]] == [0x00, 0x31, 0x00, 0x31]
+    # and a memory-write command before each burst
     assert (False, 0x2C) in stream
 
 
 def test_fill_uses_full_logical_screen(display, bus):
     display.open()
     display.fill(0x07E0)
-    assert len(bus.streams[0]) == 800 * 480
+    assert len(bus.streams) == 480  # one burst per row
+    assert all(len(s) == 800 for s in bus.streams)
+    assert all(set(s) == {0x07E0} for s in bus.streams)
 
 
 def test_set_pixel(display, bus):
@@ -74,15 +79,19 @@ def test_image_blit(display, bus):
             im.putpixel((x, y), (x * 255, y * 100, 128))
     display.open()
     display.image(im, x=5, y=7)
-    assert len(bus.streams[-1]) == 6
+    # one burst per row: 3 rows x 2 words
+    assert len(bus.streams) == 3
     expected = [rgb565(*im.getpixel((x, y))) for y in range(3) for x in range(2)]
-    assert bus.streams[-1] == expected
-    # window covers (5,7)-(6,9)
+    assert [w for s in bus.streams for w in s] == expected
+    assert bus.streams[1] == expected[2:4]
+    # window covers (5,7)-(6,9); first row y0=y1=7, last row y0=y1=9
     stream = bus.bytes_written
     i = stream.index((False, 0x2A))
     assert [b for _, b in stream[i + 1 : i + 5]] == [0x00, 0x05, 0x00, 0x06]
     j = stream.index((False, 0x2B))
-    assert [b for _, b in stream[j + 1 : j + 5]] == [0x00, 0x07, 0x00, 0x09]
+    assert [b for _, b in stream[j + 1 : j + 5]] == [0x00, 0x07, 0x00, 0x07]
+    last = [k for k, (dc, b) in enumerate(stream) if dc is False and b == 0x2B][-1]
+    assert [b for _, b in stream[last + 1 : last + 5]] == [0x00, 0x09, 0x00, 0x09]
 
 
 def test_image_fit_at_rotation(display, bus):
@@ -92,7 +101,9 @@ def test_image_fit_at_rotation(display, bus):
     display.rotation = 90
     im = Image.new("RGB", (800, 480), (255, 0, 0))
     display.image(im, fit=True)
-    assert len(bus.streams[-1]) == 480 * 288  # 800x480 scaled to 480x288
+    # scaled to 480x288, rotated to 288x480: 480 rows x 288 words
+    assert len(bus.streams) == 480
+    assert all(len(s) == 288 for s in bus.streams)
 
 
 def test_image_without_fit_raises_when_rotated(display, bus):
@@ -132,7 +143,7 @@ def test_image_stream_is_rotated_in_software(display, bus, rotation, transpose):
     im = _asymmetric_image()
     display.image(im)
     expected = list(rgb565_buffer(im.transpose(transpose)))
-    assert bus.streams[-1] == expected
+    assert [w for s in bus.streams for w in s] == expected
 
 
 def test_rotate_image_direction():
@@ -172,12 +183,18 @@ def test_rotation_dimensions_and_window_mapping(display, bus):
     display.rotation = 90
     assert (display.width, display.height) == (480, 800)
     display.fill_rect(0, 0, 480, 800, 0xF800)
-    # the logical full screen maps onto the full controller window
+    # the logical full screen maps onto the full controller window:
+    # 480 controller rows, one burst per row
+    assert len(bus.streams) == 480
+    assert all(len(s) == 800 for s in bus.streams)
     stream = bus.bytes_written
     i = stream.index((False, 0x2A))
     assert [b for _, b in stream[i + 1 : i + 5]] == [0x00, 0x00, 0x03, 0x1F]  # 0..799
     j = stream.index((False, 0x2B))
-    assert [b for _, b in stream[j + 1 : j + 5]] == [0x00, 0x00, 0x01, 0xDF]  # 0..479
+    assert [b for _, b in stream[j + 1 : j + 5]] == [0x00, 0x00, 0x00, 0x00]  # row 0
+    # last row: y0=y1=479
+    last = [k for k, (dc, b) in enumerate(stream) if dc is False and b == 0x2B][-1]
+    assert [b for _, b in stream[last + 1 : last + 5]] == [0x01, 0xDF, 0x01, 0xDF]
     # software rotation never touches MADCTL: only the init table writes 0x36
     assert bus.commands().count(0x36) == 1
 

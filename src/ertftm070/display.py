@@ -280,7 +280,9 @@ class Display:
 
         CS is held low for the whole stream (one continuous burst); the
         backend appends the 2 trailing dummy pixels that absorb this
-        chip's burst-tail quirk.
+        chip's burst-tail quirk.  Use :meth:`_blit_rows` for anything
+        multi-row: a swallowed write word mid-burst shifts everything
+        after it, so large areas are written one row per burst.
         """
         b = self._bus_checked()
         self._command(0x2C)  # memory write
@@ -288,6 +290,31 @@ class Display:
         b.pin_write(self.pins.dc, True)
         b.pixel_stream(buf)
         b.pin_write(self.pins.cs, True)
+
+    def _blit_rows(self, buf, x0: int, y0: int, x1: int, y1: int) -> None:
+        """Write a row-major buffer to a controller-space window, one row
+        per burst.
+
+        The SSD1963's GRAM arbitration occasionally swallows one write
+        word mid-burst (see docs/LESSONS.md); in one long burst that
+        shifts everything after the drop.  Per-row bursts contain any
+        drop to a single row, and each row's burst-tail loss is absorbed
+        by its own 2 trailing dummy pixels.
+        """
+        width = x1 - x0 + 1
+        view = memoryview(buf)
+        for row in range(y1 - y0 + 1):
+            self._command(0x2A)  # column window
+            self._data_list([(x0 >> 8) & 0xFF, x0 & 0xFF, (x1 >> 8) & 0xFF, x1 & 0xFF])
+            yy = y0 + row
+            self._command(0x2B)  # row window (a single row)
+            self._data_list([(yy >> 8) & 0xFF, yy & 0xFF, (yy >> 8) & 0xFF, yy & 0xFF])
+            self._command(0x2C)  # memory write
+            b = self._bus_checked()
+            b.pin_write(self.pins.cs, False)
+            b.pin_write(self.pins.dc, True)
+            b.pixel_stream(view[row * width : (row + 1) * width])
+            b.pin_write(self.pins.cs, True)
 
     def _check_bounds(self, x: int, y: int, w: int, h: int) -> None:
         if w <= 0 or h <= 0:
@@ -309,12 +336,13 @@ class Display:
     def fill_rect(self, x: int, y: int, w: int, h: int, color: int) -> None:
         """Fill a rectangle with an RGB565 color.
 
-        One window + one continuous burst, so this is the fast way to do
-        partial updates — redrawing only what changed.
+        Written one row per burst (see :meth:`_blit_rows`) so a swallowed
+        write word can never shift more than one row.  The fast way to do
+        partial updates — redraw only what changed.
         """
         self._check_bounds(x, y, w, h)
-        self._set_window(x, y, x + w - 1, y + h - 1)
-        self._blit(array("H", [color & 0xFFFF]) * (w * h))
+        cx0, cy0, cx1, cy1 = _map_rect(self._rotation, x, y, x + w - 1, y + h - 1)
+        self._blit_rows(array("H", [color & 0xFFFF]) * (w * h), cx0, cy0, cx1, cy1)
 
     def set_pixel(self, x: int, y: int, color: int) -> None:
         """Set a single pixel (window + one-word stream).
@@ -352,8 +380,8 @@ class Display:
         self._check_bounds(x, y, w, h)  # logical coordinates
         img = rotate_image(img, self._rotation)
         buf = rgb888_to_565_buffer(img)
-        self._set_window(x, y, x + w - 1, y + h - 1)
-        self._blit(buf)
+        cx0, cy0, cx1, cy1 = _map_rect(self._rotation, x, y, x + w - 1, y + h - 1)
+        self._blit_rows(buf, cx0, cy0, cx1, cy1)
 
     # ------------------------------------------------------------------
     # Display state
