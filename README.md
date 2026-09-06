@@ -38,7 +38,8 @@ in the core.
 >
 > MIT license, no warranty, no guarantees. If your display does
 > something you don't like, [open an issue](https://github.com/DorneichI/er-tftm070-4-driver/issues)
-> and a robot will be with you shortly.
+> and a robot will be with you eventually — whenever its human feels
+> like it.
 
 ---
 
