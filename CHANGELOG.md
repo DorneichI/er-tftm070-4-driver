@@ -16,6 +16,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - `ertftm070` command-line tool: `selftest`, `bars`, `fill`, `image`, `gramcheck`
   - Off-hardware unit test suite, CI, and trusted PyPI publishing
 
+### Changed
+
+- `fill_rect`/`image`/`set_pixel` write one row per burst through a single
+  backend call (`Bus.row_blit` — one C call per row on the fast backend
+  instead of the ~27 Python↔C round trips per row, which dominated
+  per-row cost: a full-screen fill on a Pi Zero W dropped from ~1.5 s to
+  ~0.6 s).  The bytes and WR strobes at the pins are unchanged; a custom
+  `Bus` passed to `Display(backend=...)` must now implement `row_blit`.
+
 ## [0.0.0] — 2026-09-05
 
 Hardware bring-up era (pre-package):

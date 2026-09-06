@@ -6,13 +6,14 @@ protocol:
 * :class:`_FastioBus` — wraps the compiled ``ertftm070._fastio`` C
   extension (~0.6 s full screen).
 * :class:`_MmioBus` — pure Python over ``/dev/gpiomem`` via ``mmap``
-  (~3 s full screen).  Used automatically when the extension was not
+  (~10 s full screen).  Used automatically when the extension was not
   built, or forced with ``ERTFTM070_FORCE_SLOW=1``.
 
 Which one is active is decided once at import time and exposed as
 ``ertftm070.BACKEND`` (``"fast"`` or ``"slow"``).  Both are otherwise
-identical: the caller (``Display``) keeps CS/DC framing in Python while
-the backend performs the timing-critical strobes.
+identical: register-level operations keep their CS/DC framing in Python
+(``Display``), while blits delegate one row per call to the backend
+(:meth:`Bus.row_blit`) so the fast path pays a single C call per row.
 
 Both backends need the BCM2835-style GPIO block exposed by
 ``/dev/gpiomem``: Raspberry Pi Zero/1/2/3/4.  On Pi 5 (RP1) or any
@@ -151,6 +152,64 @@ class Bus(Protocol):
         caller's job.
         """
 
+    def row_blit(self, x0: int, x1: int, y: int, buf: Any) -> None:
+        """One row of a blit, including CS/DC framing: the 0x2A/0x2B
+        window for columns ``x0..x1`` on row ``y`` (controller-space
+        coordinates), 0x2C, the pixel burst, and the 2 trailing dummies.
+
+        ``buf`` must hold exactly ``x1 - x0 + 1`` 16-bit words (one per
+        window column; the same word buffers :meth:`pixel_stream`
+        accepts) — both real backends raise ``ValueError`` otherwise.
+
+        A backend is free to compose this traffic however it likes; a
+        custom ``Bus`` subclass passed to ``Display(backend=...)`` must
+        implement ``row_blit``.  The backends differ only in CS/DC
+        framing — the C extension holds CS low across each command+data
+        group, the pure-Python backend pulses CS around every byte — the
+        bytes and WR strobes at the pins are the same.  One row per
+        call keeps the SSD1963's swallowed-write-word quirk
+        (docs/LESSONS.md) contained to a single burst.
+        """
+
+
+def _framed_command(bus: Bus, cmd: int) -> None:
+    """One command byte: CS low, DC low (command), byte, CS high."""
+    bus.pin_write(bus.pins.cs, False)
+    bus.pin_write(bus.pins.dc, False)
+    bus.write_byte(cmd)
+    bus.pin_write(bus.pins.cs, True)
+
+
+def _framed_data(bus: Bus, values) -> None:
+    """Data bytes for the current command: CS low, DC high, bytes, CS high."""
+    bus.pin_write(bus.pins.cs, False)
+    bus.pin_write(bus.pins.dc, True)
+    for v in values:
+        bus.write_byte(v)
+    bus.pin_write(bus.pins.cs, True)
+
+
+def _row_blit_traffic(bus: Bus, x0: int, x1: int, y: int, buf: Any) -> None:
+    """The register traffic of one row blit, on ``bus``.
+
+    Emits the 0x2A/0x2B/0x2C window commands, their argument bytes, the
+    pixel burst and the 2 trailing dummies with CS/DC framing, exactly
+    as the display driver framed rows before ``Bus.row_blit`` existed.
+    The slow backend's ``row_blit`` and the tests' fake bus both emit a
+    row this way, so their traffic cannot drift apart; the C extension
+    strokes the same bytes at the pins (CS held across each group).
+    Callers validate coordinates and buffer length first.
+    """
+    _framed_command(bus, 0x2A)  # column window
+    _framed_data(bus, (x0 >> 8, x0 & 0xFF, x1 >> 8, x1 & 0xFF))
+    _framed_command(bus, 0x2B)  # row window: a single row
+    _framed_data(bus, (y >> 8, y & 0xFF, y >> 8, y & 0xFF))
+    _framed_command(bus, 0x2C)  # memory write
+    bus.pin_write(bus.pins.cs, False)
+    bus.pin_write(bus.pins.dc, True)
+    bus.pixel_stream(buf)
+    bus.pin_write(bus.pins.cs, True)
+
 
 # ----------------------------------------------------------------------
 # Backend selection (once, at import time)
@@ -172,7 +231,7 @@ BACKEND = "fast" if _fastio is not None else "slow"
 if BACKEND == "slow" and not _forced_slow:
     warnings.warn(
         "ertftm070: the compiled _fastio extension is not available; "
-        "using the slow pure-Python backend (~3 s full screen instead of "
+        "using the slow pure-Python backend (~10 s full screen instead of "
         "~0.6 s).  To silence this on purpose, set ERTFTM070_FORCE_SLOW=1.",
         RuntimeWarning,
         stacklevel=2,
@@ -248,6 +307,10 @@ class _FastioBus:
     def pixel_stream(self, buf: Any) -> None:
         self._mod().pixel_stream(buf)
 
+    def row_blit(self, x0: int, x1: int, y: int, buf: Any) -> None:
+        """One row (window + burst + CS/DC framing) in a single C call."""
+        self._mod().row_blit(self.pins.cs, self.pins.dc, x0, x1, y, buf)
+
 
 # ----------------------------------------------------------------------
 # Slow backend: pure Python over /dev/gpiomem
@@ -255,7 +318,8 @@ class _FastioBus:
 
 
 class _MmioBus:
-    """Pure-Python fallback.  Same protocol, ~10x slower pixel path.
+    """Pure-Python fallback.  Same protocol, ~17x slower pixel path
+    (~10 s vs ~0.6 s for a full-screen fill on a Pi Zero W).
 
     Word writes go through ``mmap`` slice assignment + ``struct.pack``;
     the inter-statement gaps of the interpreter (~µs) double as the
@@ -368,6 +432,21 @@ class _MmioBus:
             mm[gpset : gpset + 4] = pack("<I", last)
             mm[gpclr : gpclr + 4] = wr_b
             mm[gpset : gpset + 4] = wr_b
+
+    def row_blit(self, x0: int, x1: int, y: int, buf: Any) -> None:
+        """One row of a blit with CS/DC framing, composed from the same
+        primitives the fast backend strokes in C (slower per call, the
+        same bytes at the pins)."""
+        self._check()
+        if x0 > x1:
+            raise ValueError("row_blit: x0 must not exceed x1")
+        view = _word_view(buf)  # also rejects odd-length byte buffers
+        if len(view) != x1 - x0 + 1:
+            raise ValueError(
+                "row_blit: buffer must hold one 16-bit word per window "
+                f"column (x1 - x0 + 1 == {x1 - x0 + 1} words), got {len(view)}"
+            )
+        _row_blit_traffic(self, x0, x1, y, view)
 
 
 def _byte_mask(value: int, pins) -> int:

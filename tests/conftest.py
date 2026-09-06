@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import pytest
 
+from ertftm070.backends import _row_blit_traffic
 from ertftm070.display import Display
 from ertftm070.pins import DEFAULT_PINS
 
@@ -22,6 +23,8 @@ class FakeBus:
         self.pin_modes = {}  # pin -> bool (is output)
         self.bytes_written = []  # (dc_level_at_write, byte) pairs
         self.streams = []  # one list of words per pixel_stream call
+        self.row_blit_calls = []  # (x0, x1, y) per row_blit call
+        self.row_blit_words = []  # the word list per row_blit call
         self.read_words = []  # script queue
 
     # -- Bus protocol --
@@ -47,6 +50,16 @@ class FakeBus:
 
     def pixel_stream(self, buf):
         self.streams.append(list(buf))
+
+    def row_blit(self, x0, x1, y, buf):
+        """Record the call (coordinates and per-row words), then emit
+        this row's traffic through the same ``_row_blit_traffic``
+        composer the slow backend uses — so the recorded byte stream
+        matches what reaches the panel, and the test oracle and the
+        real slow backend cannot drift apart."""
+        self.row_blit_calls.append((x0, x1, y))
+        self.row_blit_words.append(list(buf))
+        _row_blit_traffic(self, x0, x1, y, buf)
 
     # -- helpers for assertions --
     def commands(self):

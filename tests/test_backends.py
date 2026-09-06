@@ -186,6 +186,85 @@ def test_mmio_pixel_stream_accepts_word_buffers_too():
     assert len(mm.writes) == 12
 
 
+def test_mmio_row_blit_windows_then_streams():
+    bus, mm = _mmio_bus()
+    pixels = array("H", [0xF800, 0x07E0, 0xFFFF])  # window is 3 wide
+    bus.row_blit(0, 2, 0, pixels)
+    sets = [w[1] for w in mm.writes if w[0] == _GPSET0]
+    assert sets.index(struct.pack("<I", bus._set_low[0x2A])) < \
+        sets.index(struct.pack("<I", bus._set_low[0x2B])) < \
+        sets.index(struct.pack("<I", bus._set_low[0x2C]))
+    # every real pixel word reaches the bus as a data set, in order,
+    # after 0x2C — this test must fail if a word were dropped from the
+    # burst loop (the WR-high strobes interleave, so compare order only)
+    data_sets = [
+        struct.pack("<I", bus._set_low[0x00] | bus._set_high[0xF8]),  # 0xF800
+        struct.pack("<I", bus._set_low[0xE0] | bus._set_high[0x07]),  # 0x07E0
+        struct.pack("<I", bus._set_low[0xFF] | bus._set_high[0xFF]),  # 0xFFFF
+    ]
+    positions = [sets.index(d) for d in data_sets]
+    assert positions[0] > sets.index(struct.pack("<I", bus._set_low[0x2C]))
+    assert positions == sorted(positions)
+    # the 2 trailing dummies repeat the last real word
+    dummy = struct.pack("<I", bus._set_low[0xFF] | bus._set_high[0xFF])
+    assert sets.count(dummy) == 3  # 1 real 0xFFFF + 2 dummies
+    # 11 window bytes (3 commands + 8 argument bytes), each with one
+    # WR-low strobe, then the burst: 3 real + 2 trailing dummy pixels
+    wr = struct.pack("<I", bus._wr)
+    clr_all = struct.pack("<I", bus._clr_all)
+    first_burst = next(
+        i for i, (off, val) in enumerate(mm.writes)
+        if off == _GPCLR0 and val == clr_all
+    )
+    window_strobes = [v for off, v in mm.writes[:first_burst]
+                      if off == _GPCLR0 and v == wr]
+    burst_strobes = [v for off, v in mm.writes[first_burst:]
+                     if off == _GPCLR0 and v == wr]
+    assert len(window_strobes) == 11
+    assert len(burst_strobes) == 5
+    # the window argument bytes were really written, DC high: 0x2A args
+    # are x0=0, x1=2 as 8-bit halves; 0x2B args are y=0, twice
+    all_sets = [w[1] for w in mm.writes if w[0] == _GPSET0]
+    arg_sets = [
+        struct.pack("<I", bus._set_low[b])
+        for b in (0x00, 0x00, 0x00, 0x02, 0x00, 0x00, 0x00, 0x00)
+    ]
+    assert all(a in all_sets for a in arg_sets)
+    # CS/DC framing at the register level: CS is pulsed low once per
+    # group (3 command groups + 2 argument groups + 1 burst = 6), and DC
+    # is low only for the 3 command bytes — a row_blit that never
+    # selected the chip (CS) or sent commands with DC high would have
+    # shown as identical data-pin traffic and must fail here instead
+    cs = struct.pack("<I", 1 << bus.pins.cs)
+    dc = struct.pack("<I", 1 << bus.pins.dc)
+    assert len([v for off, v in mm.writes if off == _GPCLR0 and v == cs]) == 6
+    assert len([v for off, v in mm.writes if off == _GPSET0 and v == cs]) == 6
+    assert len([v for off, v in mm.writes if off == _GPCLR0 and v == dc]) == 3
+    assert len([v for off, v in mm.writes if off == _GPSET0 and v == dc]) == 3
+    # the very first register write selects the chip; the last deselects it
+    assert mm.writes[0] == (_GPCLR0, cs)
+    assert mm.writes[-1] == (_GPSET0, cs)
+
+
+def test_mmio_row_blit_rejects_buffer_for_wrong_width():
+    bus, mm = _mmio_bus()
+    # window is 3 columns wide (0..2) but only 2 words arrive
+    with pytest.raises(ValueError):
+        bus.row_blit(0, 2, 0, array("H", [0xF800, 0x07E0]))
+    assert mm.writes == []  # rejected before any register traffic
+
+
+def test_mmio_row_blit_rejects_reversed_columns_and_odd_bytes():
+    bus, mm = _mmio_bus()
+    with pytest.raises(ValueError):
+        bus.row_blit(5, 2, 0, array("H", [0xF800]))
+    with pytest.raises(ValueError):
+        bus.row_blit(0, 0, 0, b"\x00\xF8\xE0")  # odd byte length
+    with pytest.raises(TypeError):
+        bus.row_blit(0, 0, 0, array("I", [1, 2]))  # not word buffers
+    assert mm.writes == []
+
+
 def test_mmio_read_word_samples_and_restores_outputs():
     bus, mm = _mmio_bus()
     # controller drives DB0 (pin 4), DB11 (pin 10), DB15 (pin 24) high
