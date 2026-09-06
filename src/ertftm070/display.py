@@ -23,6 +23,7 @@ so the core package has zero runtime dependencies.
 from __future__ import annotations
 
 import logging
+import statistics
 import time
 from array import array
 from typing import TYPE_CHECKING
@@ -40,11 +41,15 @@ log = logging.getLogger("ertftm070")
 
 # Rotation is done in SOFTWARE: the panel keeps its verified native
 # orientation (MADCTL = 0x08, landscape + BGR) and images are pre-rotated
-# before blitting.  The SSD1963's 0x36 flip bits (MY/MX/MV) do not
-# reliably remap the memory-write pointer — GRAM read-back on hardware
-# showed scrambled writes for MADCTL-based rotations — so we never touch
-# 0x36 after init.  The mappings below are logical→controller; 270° was
-# verified byte-perfect against GRAM, the rest follow by composition.
+# before blitting.  On the SSD1963, 0x36 is not ILI-style MADCTL: bits
+# A[7]/A[6] are the host fill-pointer's walk direction (datasheet §9.24),
+# which reverses the write order inside the window and scrambles
+# partial-window blits — GRAM read-back on hardware showed exactly that
+# for MADCTL-based rotations — and 90°/270° hardware rotation does not
+# exist on this controller at all.  So we never touch 0x36 after init
+# (the community's working pattern too; see docs/COMMUNITY-RESEARCH.md).
+# The mappings below are logical→controller; 270° was verified
+# byte-perfect against GRAM, the rest follow by composition.
 _ROTATIONS = {
     0: {"width": 800, "height": 480},
     90: {"width": 480, "height": 800},
@@ -53,6 +58,28 @@ _ROTATIONS = {
 }
 
 _ROTATION_VALUES = frozenset(_ROTATIONS)
+
+# Shared wording for every TE-timeout: the pin is not pulsing, and the
+# two things that cause that are the wire and the panel being driven.
+_TE_HINT = (
+    "TE is not pulsing — is panel pin 8 wired to the TE GPIO, is the "
+    "display awake, and did init enable 0x35? (see docs/WIRING.md)"
+)
+
+_warned_slow_vsync = False
+
+
+def _warn_slow_vsync() -> None:
+    """One-time warning: vsync pacing on the pure-Python backend."""
+    global _warned_slow_vsync
+    if _warned_slow_vsync:
+        return
+    _warned_slow_vsync = True
+    log.warning(
+        "vsync= on the pure-Python backend: its ~20 ms rows do not fit "
+        "the ~1.6 ms blanking window — updates fall back to one row per "
+        "frame, so vsynced blits crawl (~9 s per screen)"
+    )
 
 
 def _map_point(rotation: int, x: int, y: int) -> tuple[int, int]:
@@ -84,6 +111,44 @@ def _map_rect(
     xs = [p[0] for p in points]
     ys = [p[1] for p in points]
     return (min(xs), min(ys), max(xs), max(ys))
+
+
+def _ref_ratio(init_table: Table) -> float:
+    """kHz of pixel clock per MHz of reference crystal, from the init
+    table's own clock chain: PLL = ref × (0xE2 byte0 + 1) / (0xE2 byte1
+    + 1) and PCLK = PLL × (0xE6 24-bit FPR + 1) / 2**20
+    (docs/COMMUNITY-RESEARCH.md §2).  Raises ValueError if the table
+    lacks the 0xE2/0xE6 entries."""
+    pll = fpr = None
+    for entry in init_table:
+        if isinstance(entry, tuple):
+            cmd, data = entry
+            if cmd == 0xE2 and len(data) >= 2:
+                pll = (data[0] + 1) / (data[1] + 1)
+            elif cmd == 0xE6 and len(data) >= 3:
+                fpr = (((data[0] << 16) | (data[1] << 8) | data[2]) + 1) / (1 << 20)
+    if pll is None or fpr is None:
+        raise ValueError("init table lacks the 0xE2/0xE6 clock entries")
+    return 1000.0 * pll * fpr
+
+
+def crystal_guess(pclk_khz: int, init_table: Table = INIT_UTFT) -> str:
+    """Name the crystal behind a measured pixel clock.
+
+    The clock chain is read out of ``init_table`` itself (see
+    :func:`_ref_ratio`): PCLK = ref × (0xE2 + 1)/(0xE2 + 1) ×
+    (0xE6 + 1)/2**20, so a measured pixel clock pins down the
+    reference — with the default ``INIT_UTFT`` (×31/3, ÷4) that reduces
+    to ref_MHz = pclk_kHz × 12 / 31000.  Known crystal options on these
+    boards: 6.5, 10 and 12 MHz.
+
+    Raises ValueError if ``init_table`` lacks the 0xE2/0xE6 entries.
+    """
+    ref_mhz = pclk_khz / _ref_ratio(init_table)
+    for candidate in (12.0, 10.0, 6.5):
+        if abs(ref_mhz - candidate) <= 0.75:
+            return f"{candidate:g} MHz"
+    return f"unknown ({ref_mhz:.1f} MHz)"
 
 
 class Display:
@@ -175,7 +240,12 @@ class Display:
                  self.width, self.height, backends.BACKEND)
 
     def close(self) -> None:
-        """Backlight off and release the bus.  Safe to call repeatedly."""
+        """Backlight off and release the bus.  Safe to call repeatedly.
+
+        If a :class:`ertftm070.touch.Touch` shares this bus, close it
+        first — after this the GPIO pins are released, and touch pin
+        operations (INT, /RST) fail.
+        """
         if self._bus is not None:
             try:
                 self.backlight(False)
@@ -223,6 +293,8 @@ class Display:
             b.pin_write(pin, True)  # idle state: CS/DC/WR/RD/RESET high
         b.pin_mode(self.pins.backlight, True)
         b.pin_write(self.pins.backlight, False)
+        if self.pins.te is not None:
+            b.pin_mode(self.pins.te, False)  # TE is an input driven by the panel
 
     def _command(self, cmd: int) -> None:
         """One command cycle: CS low, DC low (command), byte, CS high.
@@ -265,6 +337,15 @@ class Display:
         # some chips).  See docs/INIT-SEQUENCE.md.
         self._command(0x3A)
         self._data(0x50)
+        # Tearing effect on: 0x35 = 0x00 pulses TE during V-blanking.
+        # Like 0x3A, no community init table sets it — it is a
+        # driver-level addition, and the source of vsync and the
+        # refresh-rate measurement.  Skipped when Pins.te is None: the
+        # panel then pulses no TE line, and vsync_wait/refresh_rate
+        # raise instead of timing out.  See docs/COMMUNITY-RESEARCH.md §5.
+        if self.pins.te is not None:
+            self._command(0x35)
+            self._data(0x00)
 
     # ------------------------------------------------------------------
     # Windows and pixel streams
@@ -294,7 +375,9 @@ class Display:
         b.pixel_stream(buf)
         b.pin_write(self.pins.cs, True)
 
-    def _blit_rows(self, buf, x0: int, y0: int, x1: int, y1: int) -> None:
+    def _blit_rows(
+        self, buf, x0: int, y0: int, x1: int, y1: int, vsync: bool = False
+    ) -> None:
         """Write a row-major buffer to a controller-space window, one row
         per burst.
 
@@ -317,6 +400,18 @@ class Display:
         pixel buffers the backends accept).  Anything else — wrong
         length, odd byte count, wider items — raises here, before any
         register traffic is emitted.
+
+        With ``vsync``, each row burst first waits for a *fresh*
+        blanking window (TE falls, then rises — see
+        :meth:`_wait_vsync_blanking`) and is issued at its start, so a
+        row never lands mid-scan or straddles a window boundary —
+        tear-free updates.  Measured on this panel: a row burst takes
+        ~1.3 ms and blanking lasts ~1.6 ms of the ~18.6 ms frame, so a
+        full-screen vsynced blit costs ~480 × 18.6 ms ≈ 9 s — opt-in
+        for narrow, fast-moving content, not whole screens.  The
+        pure-Python backend's ~20 ms rows do not fit one blanking
+        window at all; it degrades to one row per frame (a warning is
+        logged once).
         """
         width = x1 - x0 + 1
         row_count = y1 - y0 + 1
@@ -332,8 +427,12 @@ class Display:
         # Row slices are the same objects on every pass.
         rows = [words[row * width : (row + 1) * width] for row in range(row_count)]
         b = self._bus_checked()
+        if vsync and backends.BACKEND == "slow":
+            _warn_slow_vsync()
         for _pass in range(self._write_passes):
             for yy, row in zip(range(y0, y1 + 1), rows):
+                if vsync:
+                    self._wait_vsync_blanking()
                 b.row_blit(x0, x1, yy, row)
 
     def _check_bounds(self, x: int, y: int, w: int, h: int) -> None:
@@ -353,16 +452,23 @@ class Display:
         """Fill the whole screen with an RGB565 color (0..65535)."""
         self.fill_rect(0, 0, self.width, self.height, color)
 
-    def fill_rect(self, x: int, y: int, w: int, h: int, color: int) -> None:
+    def fill_rect(
+        self, x: int, y: int, w: int, h: int, color: int, vsync: bool = False
+    ) -> None:
         """Fill a rectangle with an RGB565 color.
 
         Written one row per burst (see :meth:`_blit_rows`) so a swallowed
         write word can never shift more than one row.  The fast way to do
         partial updates — redraw only what changed.
+
+        ``vsync=True`` paces each row into vertical blanking (tear-free;
+        see :meth:`_blit_rows` for the cost) — for narrow moving content.
         """
         self._check_bounds(x, y, w, h)
         cx0, cy0, cx1, cy1 = _map_rect(self._rotation, x, y, x + w - 1, y + h - 1)
-        self._blit_rows(array("H", [color & 0xFFFF]) * (w * h), cx0, cy0, cx1, cy1)
+        self._blit_rows(
+            array("H", [color & 0xFFFF]) * (w * h), cx0, cy0, cx1, cy1, vsync=vsync
+        )
 
     def set_pixel(self, x: int, y: int, color: int) -> None:
         """Set a single pixel (window + one-word stream).
@@ -379,7 +485,8 @@ class Display:
         self._blit_rows(array("H", [color & 0xFFFF]), cx0, cy0, cx1, cy1)
 
     def image(
-        self, img: Image.Image, x: int = 0, y: int = 0, fit: bool = False
+        self, img: Image.Image, x: int = 0, y: int = 0, fit: bool = False,
+        vsync: bool = False,
     ) -> None:
         """Blit a Pillow image at the given top-left corner.
 
@@ -395,6 +502,8 @@ class Display:
                 to fit inside the current logical screen.  Useful after
                 a rotation, which swaps ``width``/``height``: an 800x480
                 image no longer fits a 480x800 screen.
+            vsync: Pace each row into vertical blanking (tear-free; see
+                :meth:`_blit_rows` for the cost).
 
         Requires the ``pillow`` extra: ``pip install ertftm070[Pillow]``.
         """
@@ -412,11 +521,18 @@ class Display:
         img = rotate_image(img, self._rotation)
         buf = rgb888_to_565_buffer(img)
         cx0, cy0, cx1, cy1 = _map_rect(self._rotation, x, y, x + w - 1, y + h - 1)
-        self._blit_rows(buf, cx0, cy0, cx1, cy1)
+        self._blit_rows(buf, cx0, cy0, cx1, cy1, vsync=vsync)
 
     # ------------------------------------------------------------------
     # Display state
     # ------------------------------------------------------------------
+
+    @property
+    def bus(self) -> backends.Bus | None:
+        """The opened bus, for :class:`ertftm070.touch.Touch` (it shares
+        the display's GPIO access — the fast backend is single-owner);
+        ``None`` until :meth:`open`."""
+        return self._bus
 
     @property
     def rotation(self) -> int:
@@ -431,6 +547,26 @@ class Display:
         self.width = _ROTATIONS[degrees]["width"]
         self.height = _ROTATIONS[degrees]["height"]
 
+    def unmap_point(self, x: int, y: int) -> tuple[int, int]:
+        """Inverse of the rotation mapping: panel-native coordinates →
+        the current logical frame (the space the draw calls use).
+
+        Panel-native is the frame the panel draws at ``rotation=0`` —
+        always 800 wide × 480 high, whatever the current rotation —
+        which is exactly what :meth:`ertftm070.touch.Touch.read` returns
+        with ``mapped=True`` (see the touch module docs).  Identity at
+        ``rotation=0``; touch users on a rotated display:
+
+            x, y = lcd.unmap_point(point.x, point.y)
+        """
+        if self._rotation == 90:
+            return (479 - y, x)
+        if self._rotation == 180:
+            return (799 - x, 479 - y)
+        if self._rotation == 270:
+            return (y, 799 - x)
+        return (x, y)
+
     def backlight(self, on: bool) -> None:
         """Switch the backlight on (True) or off (False)."""
         b = self._bus_checked()
@@ -443,6 +579,11 @@ class Display:
         cut, so the last picture visibly fades out toward the center —
         normal TFT physics, not a bug.  Fill the screen black first
         (``lcd.fill(0x0000)``) for an invisible power-down.
+
+        Note: with our init (``0xB8 = 07 01``) GPIO0 is a plain host
+        output, so ``0x10`` does not toggle the panel enable (datasheet
+        §9.8) — the power saving here is ``0x28`` plus the backlight
+        GPIO.  See docs/COMMUNITY-RESEARCH.md §5.
         """
         self._command(0x28)
         self._command(0x10)
@@ -533,3 +674,128 @@ class Display:
         match = got[:8] == pixels or got[1:9] == pixels
         log.info("gramcheck %s", "PASSED" if match else "FAILED")
         return match
+
+    # ------------------------------------------------------------------
+    # Timing: register read-back, TE vsync, refresh measurement
+    # ------------------------------------------------------------------
+
+    def read_register(self, reg: int, n: int) -> list[int]:
+        """Read ``n`` bytes from a register (``0xE7``, ``0xB9``, ...).
+
+        Register reads always arrive on D[7:0] regardless of bus width —
+        the low byte of each 16-bit word, masked off exactly like
+        :meth:`selftest` does.  Keep ``n`` small: like every read on
+        this chip, long reads drop words (see :meth:`_read_words`).
+        """
+        self._command(reg)
+        return [w & 0xFF for w in self._read_words(n)]
+
+    def _te_pin(self) -> int:
+        te = self.pins.te
+        if te is None:
+            raise RuntimeError(
+                "no TE pin configured (Pins.te is None) — TE-based timing "
+                "needs panel pin 8 wired to a GPIO (docs/WIRING.md)"
+            )
+        return te
+
+    def _wait_te_level(self, level: bool, deadline: float, hint: str) -> None:
+        """Poll the TE pin until it reads `level`, or raise TimeoutError
+        (with `hint`) once `deadline` passes.
+
+        Polling at ~200 µs samples the ~1.6 ms blanking window ~8 times,
+        so an edge is caught within a fraction of the window — the poll
+        period of the old vsync loop (~1 ms) could miss half of it.
+        """
+        b = self._bus_checked()
+        te = self._te_pin()
+        while b.pin_read(te) != level:
+            if time.monotonic() > deadline:
+                raise TimeoutError(hint)
+            time.sleep(0.0002)
+
+    def vsync_wait(self, timeout: float = 0.1) -> None:
+        """Block until TE goes high — the start of the vertical blanking
+        window (init sets ``0x35 = 0x00``).  The raw edge wait; the draw
+        calls gate on a *fresh* window instead (see
+        :meth:`_wait_vsync_blanking`), so use this to pace your own
+        drawing::
+
+            lcd.vsync_wait()   # next blanking window starts
+            lcd.fill_rect(...)
+
+        Raises ``TimeoutError`` when no TE pulse arrives — check the
+        pin-8 → GPIO14 wire (docs/WIRING.md) — and ``RuntimeError``
+        when ``Pins.te`` is ``None``.
+        """
+        deadline = time.monotonic() + timeout
+        self._wait_te_level(True, deadline, _TE_HINT)
+
+    def _wait_vsync_blanking(self, timeout: float = 0.1) -> None:
+        """Wait for the *start* of a fresh blanking window: TE low, then
+        high.
+
+        Rows issued after this land at the window's start with the whole
+        ~1.6 ms ahead of them, instead of mid-window (a row that starts
+        in blanking but ends after it tears).  A TE line stuck high
+        (shorted wire, panel asleep) times out here rather than letting
+        every row pretend it is blanking.
+        """
+        deadline = time.monotonic() + timeout
+        self._wait_te_level(False, deadline, _TE_HINT)
+        self._wait_te_level(True, deadline, _TE_HINT)
+
+    def _te_period_seconds(self, samples: int = 5, timeout: float = 2.0) -> float:
+        """Median TE period (one frame) across ``samples`` rising edges.
+
+        The median shrugs off a single dropped TE pulse, which would
+        skew a mean to ~2× the period; the ``samples`` edges yield
+        ``samples - 1`` period samples, so ``samples`` must be ≥ 2.
+        """
+        if samples < 2:
+            raise ValueError("samples must be >= 2 (one period needs two edges)")
+        self._bus_checked()
+        self._te_pin()  # fail fast before burning the deadline on a pin-less wait
+        deadline = time.monotonic() + timeout
+        self._wait_te_level(False, deadline, _TE_HINT)  # start from a known phase
+        self._wait_te_level(True, deadline, _TE_HINT)  # first rising edge
+        edges = [time.monotonic()]
+        for _ in range(samples - 1):
+            self._wait_te_level(False, deadline, _TE_HINT)
+            self._wait_te_level(True, deadline, _TE_HINT)
+            edges.append(time.monotonic())
+        gaps = [edges[i + 1] - edges[i] for i in range(samples - 1)]
+        return statistics.median(gaps)
+
+    def _scan_totals(self) -> tuple[int, int]:
+        """``(ht_total, vt_total)`` from the 0xB4/0xB6 entries of the
+        active init table — the datasheet stores total-minus-one in
+        HT[10:0]/VT[10:0] (bytes 1-2 of each command)."""
+        ht = vt = None
+        for entry in self.init_table:
+            if isinstance(entry, tuple):
+                cmd, data = entry
+                if cmd == 0xB4 and len(data) >= 2:
+                    ht = (((data[0] & 0x07) << 8) | data[1]) + 1
+                elif cmd == 0xB6 and len(data) >= 2:
+                    vt = (((data[0] & 0x07) << 8) | data[1]) + 1
+        if ht is None or vt is None:
+            raise RuntimeError("init table lacks 0xB4/0xB6 scan timing")
+        return ht, vt
+
+    def refresh_rate(self, samples: int = 5, timeout: float = 2.0) -> tuple[int, float]:
+        """``(pclk_khz, hz)`` — the panel's actual clocks, measured.
+
+        Both derive from the TE period, the ground truth for refresh:
+        ``hz`` directly, and PCLK from the frame rate and the scan
+        totals of the active init table (PCLK = hz × HT × VT).  The
+        ``0xE7`` register was tried first — on hardware it returns the
+        FPR value (``0x03FFFF``), not a frequency, so it is not used.
+        Pair with :func:`crystal_guess` to settle which crystal the
+        board carries — see docs/COMMUNITY-RESEARCH.md §2 for why that
+        was ever in doubt.
+        """
+        ht, vt = self._scan_totals()
+        hz = 1.0 / self._te_period_seconds(samples, timeout)
+        pclk_khz = int(hz * ht * vt / 1000.0)
+        return pclk_khz, hz

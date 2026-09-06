@@ -5,6 +5,8 @@
     ertftm070 fill F800         fill the whole screen with one RGB565 color
     ertftm070 image photo.png   show an image (needs Pillow)
     ertftm070 gramcheck         write known pixels, read them back from GRAM
+    ertftm070 refresh           measure the pixel clock and frame rate
+    ertftm070 touch-test        stream touches until Ctrl+C (needs the I2C wires)
 
 The drawing commands (bars/fill/image) hold the picture on screen until
 Ctrl+C or SIGTERM (both turn the backlight off); pass --once to exit
@@ -22,7 +24,8 @@ import sys
 import time
 
 from . import init
-from .display import Display
+from ._i2c import I2CError
+from .display import Display, crystal_guess
 from .errors import Ertftm070Error
 
 BARS = [
@@ -131,6 +134,16 @@ def build_parser() -> argparse.ArgumentParser:
         "gramcheck", parents=[common],
         help="write known pixels, read them back from GRAM",
     )
+
+    subparsers.add_parser(
+        "refresh", parents=[common],
+        help="measure the pixel clock and frame rate from the TE pin",
+    )
+
+    subparsers.add_parser(
+        "touch-test", parents=[common],
+        help="stream touch points until Ctrl+C (needs SCL/SDA/WAKE wired)",
+    )
     return parser
 
 
@@ -188,6 +201,55 @@ def run(args: argparse.Namespace, display: Display | None = None) -> int:
 
         if args.command == "gramcheck":
             return 0 if display.gramcheck() else 1
+
+        if args.command == "refresh":
+            try:
+                pclk_khz, hz = display.refresh_rate()
+            except (TimeoutError, RuntimeError) as exc:
+                # TimeoutError: no TE pulses (wiring / panel asleep);
+                # RuntimeError: Pins.te is None, or the init table lacks
+                # 0xB4/0xB6.  Both mean "cannot measure" — report and fail.
+                print(f"error: {exc}", file=sys.stderr)
+                return 1
+            print(f"pixel clock (from TE): {pclk_khz} kHz")
+            print(f"frame rate (TE):       {hz:.1f} Hz")
+            print(
+                "crystal:               "
+                f"{crystal_guess(pclk_khz, display.init_table)}"
+            )
+            return 0
+
+        if args.command == "touch-test":
+            from .touch import Touch
+
+            touch = Touch(display.bus)
+            try:
+                touch.open()
+            except I2CError as exc:
+                print(f"touch unavailable: {exc}", file=sys.stderr)
+                return 1
+            print("touch test — touch the panel (Ctrl+C to exit)")
+            seen = None
+            try:
+                while True:
+                    points = touch.read()
+                    key = tuple((p.id, p.x, p.y) for p in points)
+                    if key != seen:
+                        seen = key
+                        for p in points:
+                            m = touch.calibration.map(p)
+                            # mapped points are panel-native; --rotation
+                            # users want the logical frame instead
+                            ux, uy = display.unmap_point(m.x, m.y)
+                            print(
+                                f"  finger {p.id}: raw=({p.x},{p.y}) "
+                                f"-> panel=({m.x},{m.y}) "
+                                f"screen=({ux},{uy}) event={p.event}"
+                            )
+                    time.sleep(0.02)
+            finally:
+                touch.close()
+            return 0
 
         print("no command given — see ertftm070 --help", file=sys.stderr)
         return 2

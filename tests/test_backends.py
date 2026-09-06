@@ -265,6 +265,15 @@ def test_mmio_row_blit_rejects_reversed_columns_and_odd_bytes():
     assert mm.writes == []
 
 
+def test_mmio_pin_read_samples_level_register():
+    bus, mm = _mmio_bus()
+    lev = 1 << DEFAULT_PINS.te
+    mm.buf[_GPLEV0 : _GPLEV0 + 4] = struct.pack("<I", lev)
+    assert bus.pin_read(DEFAULT_PINS.te) is True
+    assert bus.pin_read(DEFAULT_PINS.backlight) is False
+    assert mm.writes == []  # a level read touches no registers
+
+
 def test_mmio_read_word_samples_and_restores_outputs():
     bus, mm = _mmio_bus()
     # controller drives DB0 (pin 4), DB11 (pin 10), DB15 (pin 24) high

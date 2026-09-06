@@ -14,7 +14,7 @@ ER-TFTM070-4V2.1 datasheet (section 4.1) and were verified on hardware.
 | 5  | E_/RD  | GPIO16   | 36  | read strobe (idle high; write-only here) |
 | 6  | R/W_/WR| GPIO21   | 40  | write strobe, active low |
 | 7  | RESET  | GPIO12   | 32  | master reset, active low |
-| 8  | TE     | —        | —   | tearing effect output, unused |
+| 8  | TE     | GPIO14   | 8   | tearing effect output → vsync + refresh measurement (init enables `0x35`) |
 | 9  | DB0    | GPIO4    | 7   | data, low byte bit 0 |
 | 10 | DB1    | GPIO17   | 11  | data, low byte bit 1 |
 | 11 | DB2    | GPIO27   | 13  | data, low byte bit 2 |
@@ -62,14 +62,25 @@ four wires on top of the display wiring:
 |---|---|---|
 | 34 | SCL | Pi GPIO3 (phys pin 5) — I²C clock |
 | 35 | SDA | Pi GPIO2 (phys pin 3) — I²C data |
-| 33 | /RST | any free GPIO, e.g. GPIO14 (phys 8) |
-| 36 | INT | any free GPIO, e.g. GPIO15 (phys 10); open-drain, Pi pull-up is fine |
-| 37 | WAKE | optional — leave unconnected, or another GPIO |
+| 33 | /RST (RSTB) | Pi GPIO0 (phys 27) — optional; enables software reset, the board already has an on-board RC reset |
+| 36 | INT | Pi GPIO15 (phys 10) — optional; polling TD_STATUS works without it. Polarity is firmware-dependent (measured: idle low, high during touches) — the driver treats any change as an event |
+| 37 | WAKE | **3.3 V (phys 1), tied high** — a hibernating FT5x06 answers at ghost addresses instead of 0x38 |
+
+> **`/RST` is on GPIO0, not GPIO14** — this guide's early revisions
+> suggested 14, but that pin now carries TE (connector pin 8 →
+> vsync/refresh measurement). Any free GPIO works; wire it to a
+> different pin with `Touch(touch_pins=...)` (validated like `Pins`).
 
 Enable I²C (`raspi-config` → Interface Options, or `dtparam=i2c_arm=on`).
-Driver support (`ertftm070.touch`) is on the package roadmap; the kernel
+The package driver is `ertftm070.touch` (`Touch(lcd.bus)` — see
+[docs/COMMUNITY-RESEARCH.md](COMMUNITY-RESEARCH.md) §6); the kernel
 `ft5x06` driver + device-tree overlay is the alternative path (touch
 appears as a normal `/dev/input/eventX` device).
+
+> **UART conflict:** GPIO14/15 (phys 8/10) double as the UART console
+> pins. If your Pi has a serial console enabled, disable it
+> (`enable_uart=0`, remove `console=serial0` from cmdline.txt) or TE
+> and INT will fight it.
 
 ## Board configuration
 

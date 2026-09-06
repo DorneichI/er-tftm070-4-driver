@@ -9,7 +9,7 @@ right after init), and `0x36 = 0x08` (BGR color order).
 | Step | Command / data | What it does |
 |---|---|---|
 | 1 | Hardware reset: RESET low 100 ms → high | Master reset |
-| 2 | `0xE2` = `1E 02 54` | **PLL M/N.** M=30, N=2 → VCO = 10 MHz × 31 = 310 MHz, PLL = VCO/3 ≈ **103 MHz**. Last byte applies M/N. (Skipping this runs the PLL on uncalibrated POR values.) |
+| 2 | `0xE2` = `1E 02 54` | **PLL M/N.** M=30, N=2 → VCO = 10 MHz × 31 = 310 MHz, PLL = VCO/3 ≈ **103 MHz**. Last byte applies M/N. (Skipping this runs the PLL on uncalibrated POR values.) **All figures below assume a 10 MHz crystal; unverified — see [Timing](#timing).** |
 | 3 | `0xE0` = `01`, wait 100 ms | Enable PLL |
 | 4 | `0xE0` = `03`, wait 10 ms | Lock PLL, switch system clock to it |
 | 5 | `0x01`, wait 100 ms | Software reset |
@@ -27,6 +27,7 @@ right after init), and `0x36 = 0x08` (BGR color order).
 | 17 | `0xBE` = `06 F0 01 F0 00 00` | Backlight PWM config (only matters if backlight were board-controlled; harmless here) |
 | 18 | `0xD0` = `0D` | Dynamic backlight control config (harmless here) |
 | 19 | `0x3A` = `50` | **16 bits per pixel.** Set after display-on in the driver; the POR value is "reserved" and misbehaves on some chips. |
+| 20 | `0x35` = `00` | **Tearing effect on**, V-blanking only. A driver-level addition — no community table sets it (see docs/COMMUNITY-RESEARCH.md §5). Feeds `Display.vsync_wait()` and `refresh_rate()` via the TE pin (connector pin 8). Skipped when `Pins.te` is `None` (no TE wire) — `vsync_wait()`/`refresh_rate()` then raise. |
 
 Then, to draw: `0x2A` (column window) → `0x2B` (row window) → `0x2C`
 (memory write) → stream one 16-bit pixel per WR strobe, low byte on
@@ -40,6 +41,18 @@ display on/off control — skip these writes and the panel stays in its
 un-driven white state no matter what else you do.
 
 ## Timing
+
+**Crystal frequency — verified on hardware (2026-09-06).** The figures
+above assume a 10 MHz crystal; UTFT's own comment next to the `0x1E`
+byte ("set PLL clock to 120M") is only true for a 12 MHz crystal, so
+this was measured. TE (`0x35`) on connector pin 8 reads **53.7 Hz**
+(18.6 ms), i.e. PCLK ≈ 929×526×53.7 ≈ **26.2 MHz** — the 10 MHz
+prediction (25.8 MHz) to within 2%, and incompatible with the 12 MHz
+prediction (31 MHz → 63.4 Hz). **The board carries a 10 MHz crystal;
+all MHz/Hz numbers on this page hold.** The `0xE7` register was not
+usable for this: on hardware it returns the FPR value (`0x03FFFF`),
+not a frequency. See [COMMUNITY-RESEARCH.md](COMMUNITY-RESEARCH.md)
+§2.
 
 The controller's write-cycle timing is nominally ~100 ns, but this board
 was observed to drop bytes with sub-microsecond strobes in some

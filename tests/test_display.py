@@ -15,10 +15,11 @@ PIXELS = [0x0000, 0xF800, 0x07E0, 0x001F, 0xFFFF, 0xFFE0, 0x07FF, 0xF81F]
 
 def test_open_configures_pins_and_inits(display, bus):
     display.open()
-    # all 22 pins configured as outputs
+    # 22 pins configured as outputs, TE as the sole input
     pins = list(bus.pin_modes)
-    assert len(pins) == 22
-    assert all(bus.pin_modes[p] is True for p in pins)
+    assert len(pins) == 23
+    assert bus.pin_modes[bus.pins.te] is False
+    assert all(bus.pin_modes[p] is True for p in pins if p != bus.pins.te)
     # idle states: control lines high, data and backlight low
     for p in (bus.pins.cs, bus.pins.dc, bus.pins.wr, bus.pins.rd, bus.pins.reset):
         assert bus.pin_levels[p] is True
@@ -38,6 +39,9 @@ def test_init_writes_f0_and_post_init_3a(display, bus):
     # 0x3A=0x50 comes after 0x29 (display on), at the very end of the table
     assert stream.index((False, 0x29)) < stream.index((False, 0x3A))
     assert stream[stream.index((False, 0x3A)) + 1] == (True, 0x50)
+    # 0x35=0x00 (tearing effect on, V-blanking) follows, driver-level
+    assert stream.index((False, 0x3A)) < stream.index((False, 0x35))
+    assert stream[stream.index((False, 0x35)) + 1] == (True, 0x00)
 
 
 def test_fill_rect_window_and_stream(display, bus):
@@ -241,6 +245,40 @@ def test_rotation_dimensions_and_window_mapping(display, bus):
 def test_rotation_rejects_bad_values(display):
     with pytest.raises(ValueError):
         display.rotation = 45
+
+
+@pytest.mark.parametrize(
+    "rotation,native,logical",
+    [
+        (0, (10, 20), (10, 20)),
+        (90, (0, 479), (0, 0)),  # native corners -> logical corners
+        (90, (799, 0), (479, 799)),
+        (180, (799, 479), (0, 0)),
+        (180, (10, 20), (789, 459)),
+        (270, (799, 0), (0, 0)),
+        (270, (0, 479), (479, 799)),  # logical corner inside the 480x800 frame
+    ],
+)
+def test_unmap_point_inverts_the_rotation_mapping(display, rotation, native, logical):
+    display.rotation = rotation
+    assert display.unmap_point(*native) == logical
+
+
+def test_unmap_point_roundtrips_the_whole_native_frame(display):
+    # every controller coordinate maps back to exactly one logical point,
+    # for every rotation (the identity used by touch at rotation=0 is a
+    # special case of the same rule)
+    from ertftm070.display import _map_point
+
+    for rotation in (0, 90, 180, 270):
+        display.rotation = rotation
+        for lx in range(0, display.width, 137):
+            for ly in range(0, display.height, 97):
+                native = _map_point(rotation, lx, ly)
+                assert display.unmap_point(*native) == (lx, ly)
+        # the far corners too (the stride above may skip them)
+        native = _map_point(rotation, display.width - 1, display.height - 1)
+        assert display.unmap_point(*native) == (display.width - 1, display.height - 1)
 
 
 @pytest.mark.parametrize(
