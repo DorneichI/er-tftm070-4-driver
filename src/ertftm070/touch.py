@@ -41,12 +41,15 @@ cannot exist anyway.
 """
 from __future__ import annotations
 
+import logging
 import time
 from dataclasses import dataclass
 
 from ._i2c import I2C
 from .backends import Bus
 from .pins import GPIO_MAX
+
+log = logging.getLogger("ertftm070")
 
 FT5X06_ADDR = 0x38
 
@@ -66,6 +69,43 @@ _MAX_POINTS = 5
 EVENT_DOWN = 0
 EVENT_UP = 1
 EVENT_CONTACT = 2
+
+# The FT5x06 can power on in a "phantom" state: TD_STATUS claims touches
+# (0x35 = five) whose records carry impossible finger ids (> 4) and frozen
+# garbage coordinates.  It is not cleared by a write-0 to 0x02 or a /RST
+# pulse and self-recovers only after minutes — so open()/reset() wait out
+# the worst of it (see _wait_sane), warn once per episode, and carry on.
+# read()/wait_touch() also drop the phantom's impossible-id records, so a
+# phantom that outlives the wait never surfaces as touches either.
+_SANITY_TIMEOUT = 5.0
+_SANITY_POLL = 0.25
+
+_warned_phantom = False
+
+
+def _warn_phantom() -> None:
+    """Warn once per phantom episode: the chip's phantom state did not
+    clear within the wait budget.  Re-armed by ``_mark_phantom_clear``
+    the next time the chip is seen sane, so a fresh episode (a later
+    power-on, a second panel) warns again while one persistent episode
+    stays silent after its first warning."""
+    global _warned_phantom
+    if _warned_phantom:
+        return
+    _warned_phantom = True
+    log.warning(
+        "FT5x06 phantom touch state did not clear within %.1f s — "
+        "proceeding; TD_STATUS may keep claiming touches with impossible "
+        "finger ids until the chip recovers on its own (minutes)",
+        _SANITY_TIMEOUT,
+    )
+
+
+def _mark_phantom_clear() -> None:
+    """The chip has been seen sane: re-arm the warn-once latch so the
+    next phantom episode is diagnosed again."""
+    global _warned_phantom
+    _warned_phantom = False
 
 
 @dataclass(frozen=True)
@@ -116,6 +156,42 @@ def decode_points(records: bytes, count: int) -> list[TouchPoint]:
                 )
             )
     return points
+
+
+def _records_sane(records: bytes, count: int) -> bool:
+    """False when any of ``count`` raw 6-byte records is impossible: a
+    truncated record or a finger-id nibble above the chip's 0..4."""
+    for i in range(count):
+        base = i * 6
+        if base + 6 > len(records):
+            return False
+        if (records[base + 2] >> 4) & 0x0F > _MAX_POINTS - 1:
+            return False
+    return True
+
+
+def _touch_sane(i2c: I2C) -> bool:
+    """One status sample: TD_STATUS count 0, or every claimed record
+    plausible.  Junk counts (> 5) decode as none — clean."""
+    status = i2c.read_reg(TD_STATUS, 1)[0]
+    count = decode_status(status)
+    if count == 0:
+        return True
+    records = i2c.read_reg(_POINT_BASES[0], count * 6)
+    return _records_sane(records, count)
+
+
+def _rst_pulse(bus: Bus, pin: int) -> None:
+    """Drive one /RST pulse: high, low ≥5 ms (Trst), then ≥300 ms of
+    settle time (Trsi) before the chip's first report.  Shared by
+    :meth:`Touch.open` and :meth:`Touch.reset` — the same timing in
+    both, so a later reset behaves exactly like a fresh open."""
+    bus.pin_mode(pin, True)
+    bus.pin_write(pin, True)  # reset inactive
+    bus.pin_write(pin, False)  # real /RST pulse
+    time.sleep(0.01)  # >= Trst (5 ms)
+    bus.pin_write(pin, True)  # release
+    time.sleep(0.3)  # Trsi: >= 300 ms before the first report
 
 
 def _scale(value: int, vmin: int, vmax: int, size: int, mirror: bool) -> int:
@@ -174,9 +250,10 @@ class TouchPins:
     SCL/SDA are the fixed I2C-1 bus and WAKE is tied to 3.3 V in the
     verified wiring, so only INT and /RST are configurable — ``None``
     disables a pin.  Like :class:`~ertftm070.pins.Pins`, range and
-    self-uniqueness are validated at construction.  (The pins share
-    the display bus, so they must not collide with the display's
-    ``Pins`` either — keep that in mind for custom wirings.)
+    self-uniqueness are validated at construction; collisions with the
+    display's own pins are rejected by :class:`Touch` at construction
+    (``_validate_pin_layout``), since both drivers would fight over the
+    shared GPIO register bank.
     """
 
     int_pin: int | None = 15
@@ -232,32 +309,81 @@ class Touch:
         self.calibration = calibration
         self._i2c = i2c or I2C(FT5X06_ADDR)
         self._opened = False
+        self._validate_pin_layout(bus)
+
+    def _validate_pin_layout(self, bus: Bus) -> None:
+        """Reject a touch wiring that aliases the display's own pins.
+
+        INT and /RST live on the same physical connector the display
+        uses, and both drivers write their pins' levels through the
+        same register bank — a collision is not merely a short on the
+        bench, but an active fight between ``Display`` and ``Touch``
+        (e.g. a /RST pulse into the SSD1963's reset line resets the
+        display mid-frame).  The checked bus implementations expose
+        their wiring as ``.pins``; anything else cannot be validated
+        and is accepted as-is.
+        """
+        bus_pins = getattr(bus, "pins", None)
+        if bus_pins is None:
+            return
+        display_pins = {
+            *bus_pins.data_low,
+            *bus_pins.data_high,
+            bus_pins.cs,
+            bus_pins.dc,
+            bus_pins.wr,
+            bus_pins.rd,
+            bus_pins.reset,
+            bus_pins.backlight,
+        }
+        if bus_pins.te is not None:
+            display_pins.add(bus_pins.te)
+        clash = sorted(
+            p
+            for p in (self.touch_pins.int_pin, self.touch_pins.rst_pin)
+            if p is not None and p in display_pins
+        )
+        if clash:
+            raise ValueError(
+                "touch pins collide with the display's bus pins "
+                f"(GPIO {clash} — see docs/WIRING.md)"
+            )
 
     # -- lifecycle --
 
     def open(self) -> None:
-        """Bring the touch chip up: pins, I2C, settle, dummy read.
+        """Bring the touch chip up: /RST pulse, pins, I2C, dummy read.
 
         Idempotent.  No register writes beyond ``0x00 = 0`` (working
-        mode) — the FT5x06 needs timing, not configuration.  The
-        ≥300 ms settle is only needed after a power-on/reset, so with
-        no /RST pin (nothing resets the chip here — the board's RC
-        reset long settled) it is skipped.
+        mode) — the FT5x06 needs timing, not configuration.  With a
+        /RST pin the chip is actively reset (low ≥ 5 ms, then the
+        ≥ 300 ms Trsi settle before its first report); without one the
+        board's RC reset has long settled, so that settle is skipped.
+        The chip is then polled for up to ~5 s until TD_STATUS stops
+        claiming impossible touches (the phantom power-on state, see
+        ``_warn_phantom``) — it is waited out, not fatal.
         """
         if self._opened:
             return
         b = self._bus_checked()
         if self.touch_pins.rst_pin is not None:
-            b.pin_mode(self.touch_pins.rst_pin, True)
-            b.pin_write(self.touch_pins.rst_pin, True)  # reset inactive
+            _rst_pulse(b, self.touch_pins.rst_pin)
         if self.touch_pins.int_pin is not None:
             b.pin_mode(self.touch_pins.int_pin, False)  # INT is an input
         self._i2c.open()
-        # First report needs >=300 ms after power-on/reset (Tpon/Trsi).
-        if self.touch_pins.rst_pin is not None:
-            time.sleep(0.3)  # RST was floating until just now: settle it
-        self._i2c.read_reg(0x00, 1)  # dummy read: flush first-access garbage
-        self._i2c.write_reg(0x00, b"\x00")  # device mode = working
+        try:
+            self._i2c.read_reg(0x00, 1)  # dummy read: flush first-access garbage
+            self._i2c.write_reg(0x00, b"\x00")  # device mode = working
+            self._wait_sane()
+        except BaseException:
+            # The bus was opened but the chip did not answer (a wiring/
+            # power fault — _wait_sane propagates those on purpose, see
+            # there): release the fd so a retry or process exit does not
+            # leak it.  _opened is still False, so the touch stays
+            # "needs open()" and the Display-half of the bus is left
+            # untouched.
+            self._i2c.close()
+            raise
         self._opened = True
 
     def close(self) -> None:
@@ -277,6 +403,29 @@ class Touch:
                 "Touch needs an open bus — pass the Display's bus (lcd.bus)"
             )
         return self._bus
+
+    def _wait_sane(self) -> None:
+        """Poll TD_STATUS + records until the chip leaves its phantom
+        power-on state, or ~5 s pass.
+
+        Phantom state is not fatal — the chip self-recovers within
+        minutes — so a timeout only warns (once per episode, see
+        ``_warn_phantom``) and open()/reset() proceed.  An I2CError from
+        a poll propagates: a bus that stops answering is a wiring/power
+        fault (see ``_i2c.I2CError``), not a phantom, and per-transfer
+        timeouts bound it anyway.
+        """
+        deadline = time.monotonic() + _SANITY_TIMEOUT
+        while True:
+            if _touch_sane(self._i2c):
+                # A sane sample means the episode is over: re-arm the
+                # warn-once latch for the next one.
+                _mark_phantom_clear()
+                return
+            if time.monotonic() >= deadline:
+                _warn_phantom()
+                return
+            time.sleep(_SANITY_POLL)
 
     # -- input --
 
@@ -302,6 +451,11 @@ class Touch:
             return []
         records = self._i2c.read_reg(_POINT_BASES[0], count * 6)
         points = decode_points(records, count)
+        # Finger ids above the chip's 0..4 are impossible — they are the
+        # phantom power-on signature _records_sane detects — so drop such
+        # points here too: a phantom that outlives open()'s ~5 s wait
+        # must not surface as touches for the minutes it persists.
+        points = [p for p in points if p.id <= _MAX_POINTS - 1]
         # Full-scale coordinates are the family's "unpressed" marker, not
         # a position on any panel — filter on the chip's own junk band
         # rather than the calibration span, which may legitimately not
@@ -318,7 +472,18 @@ class Touch:
         return points
 
     def _has_touch(self) -> bool:
-        return decode_status(self._i2c.read_reg(TD_STATUS, 1)[0]) > 0
+        """A *real* touch is present: TD_STATUS claims a count and the
+        claimed records decode to at least one plausible point (finger
+        id 0..4, press/contact event).  Phantom frames — TD_STATUS 0x35
+        with impossible-id records, see ``_records_sane`` — read as no
+        touch, so ``wait_touch`` does not wake on them and a phantom
+        that outlives open()'s wait-out cannot busy-trigger a wake.
+        """
+        count = decode_status(self._i2c.read_reg(TD_STATUS, 1)[0])
+        if count == 0:
+            return False
+        records = self._i2c.read_reg(_POINT_BASES[0], count * 6)
+        return any(p.id <= _MAX_POINTS - 1 for p in decode_points(records, count))
 
     def wait_touch(
         self, timeout: float | None = None, poll_interval: float = 0.02
@@ -374,7 +539,15 @@ class Touch:
         """Pulse /RST low ≥5 ms (Trst), then wait the 300 ms (Trsi) the
         chip needs before its first report — the recovery hammer for a
         wedged FT5x06.  Afterwards the first-report garbage is flushed
-        the same way :meth:`open` does, so the chip answers cleanly."""
+        the same way :meth:`open` does and the phantom power-on state is
+        waited out the same way too.
+
+        What the wait cannot promise: a phantom that outlives the ~5 s
+        budget is warned about and *carried on from* (the chip only
+        self-recovers after minutes), and the pulse does not clear it
+        (measured).  Data surfaced after that stays clean regardless —
+        :meth:`read` and :meth:`wait_touch` drop the phantom's
+        impossible-id records."""
         if not self._opened:
             raise RuntimeError(
                 "touch not open — call open() or use the context manager"
@@ -382,10 +555,6 @@ class Touch:
         if self.touch_pins.rst_pin is None:
             raise RuntimeError("no /RST pin configured (TouchPins.rst_pin is None)")
         b = self._bus_checked()
-        pin = self.touch_pins.rst_pin
-        b.pin_mode(pin, True)
-        b.pin_write(pin, False)
-        time.sleep(0.01)
-        b.pin_write(pin, True)
-        time.sleep(0.3)
+        _rst_pulse(b, self.touch_pins.rst_pin)
         self._i2c.read_reg(0x00, 1)  # dummy read: flush first-access garbage
+        self._wait_sane()  # the phantom state can outlive the pulse

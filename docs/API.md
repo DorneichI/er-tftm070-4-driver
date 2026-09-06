@@ -143,14 +143,25 @@ with Display() as lcd, Touch(lcd.bus) as touch:
 ```
 
 `Touch(bus, touch_pins=DEFAULT_TOUCH_PINS, calibration=DEFAULT_CALIBRATION,
-i2c=None)` — context manager, `open()` idempotent.
+i2c=None)` — context manager, `open()` idempotent. `open()` (also run
+by the context manager) drives the configured `/RST` pulse (high→low
+≥5 ms, then the 300 ms Trsi settle before the chip's first report),
+opens I2C-1 at 0x38, does the one dummy read the chip needs, and then
+polls TD_STATUS for up to ~5 s waiting out the phantom power-on state
+(impossible touch claims — see `reset()`). A phantom that outlives the
+wait is warned about (once per episode) and carried on from; either
+way it never surfaces as touches (`read()` drops its impossible-id
+records, `wait_touch()` does not wake on it). If the I2C bus itself
+fails to answer during `open()`, the transport is closed again and the
+error propagates — a retry runs the full `open()`.
 
 - `read(mapped=False)` → `[TouchPoint]` — one TD_STATUS byte + one
-  6-byte record per touch; drops release events and the chip family's
-  bogus full-scale DOWN coordinates. `mapped=True` returns panel-native
-  coordinates via the calibration (always the 800×480 rotation-0
-  frame — pass them through `Display.unmap_point` when the display is
-  rotated). Raises if the touch is not open.
+  6-byte record per touch; drops release events, records with
+  impossible finger ids (the phantom state), and the chip family's
+  bogus full-scale DOWN coordinates. `mapped=True` returns
+  panel-native coordinates via the calibration (always the 800×480
+  rotation-0 frame — pass them through `Display.unmap_point` when the
+  display is rotated). Raises if the touch is not open.
 - `wait_touch(timeout=None, poll_interval=0.02)` → `bool` — True when a
   touch shows up, False on timeout.  Nothing hard-blocks: the INT pin
   is read every `poll_interval` seconds (any level *change* confirms on
@@ -159,7 +170,11 @@ i2c=None)` — context manager, `open()` idempotent.
   wake-on-touch primitive.
 - `reset()` — pulse `/RST` low ≥5 ms (Trst), wait 300 ms (Trsi), then
   flush the first-report garbage. The recovery hammer for a wedged
-  chip. Raises if no `/RST` pin is configured.
+  chip; it also waits out the phantom power-on state (impossible
+  TD_STATUS claims) for up to ~5 s before proceeding. The pulse does
+  not clear a phantom and one can outlive the wait — reads and wakes
+  stay clean anyway (`read()`/`wait_touch()` drop the impossible-id
+  records). Raises if no `/RST` pin is configured.
 - `close()` — release the I²C bus.
 
 ### `TouchPoint`
@@ -179,8 +194,10 @@ conversion (clamped); `DEFAULT_CALIBRATION` is the measured one.
 
 Frozen dataclass of the touch GPIOs: `int_pin` (default 15), `rst_pin`
 (default 0); `None` disables a pin.  Validated on construction like
-`Pins` (range and INT//RST uniqueness); the pins must not collide with
-the display's `Pins` either.
+`Pins` (range and INT//RST uniqueness); collisions with the display's
+`Pins` are rejected by `Touch` at construction (`_validate_pin_layout`)
+— both drivers would otherwise fight over the shared GPIO register
+bank.
 
 ## `rgb565(r, g, b)`
 

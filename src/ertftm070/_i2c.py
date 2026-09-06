@@ -3,8 +3,8 @@
 The FT5x06 touch controller (docs/COMMUNITY-RESEARCH.md §6) needs just
 register-pointer + byte reads/writes; the kernel's i2c-dev character
 device provides exactly that through ``ioctl(I2C_SLAVE)`` +
-``read()``/``write()``.  Kept deliberately thin — everything testable
-lives in :mod:`ertftm070.touch` above it.
+``read()``/``write()``.  Kept deliberately thin — the touch-level
+behavior it serves lives in :mod:`ertftm070.touch` above it.
 """
 from __future__ import annotations
 
@@ -13,6 +13,7 @@ import os
 from .errors import Ertftm070Error
 
 _I2C_SLAVE = 0x0703  # linux/i2c-dev.h
+_I2C_TIMEOUT = 0x0702  # linux/i2c-dev.h: set timeout in units of 10 ms
 
 # Wiring hints appended to every bus-level failure: an absent or wedged
 # FT5x06 can look like almost any OSError, so point at what actually
@@ -32,7 +33,8 @@ class I2CError(Ertftm070Error):
     chip hibernating because CTP_WAKE (pin 37) is not tied to 3.3 V —
     in that state it answers at ghost addresses instead of 0x38.  An
     absent slave only shows up on the first read or write, never on
-    :meth:`I2C.open` — that ioctl only sets the address.
+    :meth:`I2C.open` — its ioctls only set the address and a transfer
+    timeout.
     """
 
 
@@ -45,7 +47,13 @@ class I2C:
         self._fd = None  # type: int | None
 
     def open(self) -> None:
-        """Open the bus and address the slave.  Idempotent."""
+        """Open the bus and address the slave.  Idempotent.
+
+        Also asks the kernel to bound every transfer at 1 s
+        (``I2C_TIMEOUT``, 100 × 10 ms) so a wedged slave cannot stall
+        the process forever; best-effort — an adapter that rejects the
+        ioctl keeps its own default.
+        """
         if self._fd is not None:
             return
         try:
@@ -68,6 +76,16 @@ class I2C:
             raise I2CError(
                 f"cannot select slave 0x{self.addr:02X} on {self.path}: {exc}"
             ) from exc
+        try:
+            # Bound every transfer at ~1 s (100 × 10 ms) so a wedged
+            # slave cannot stall the process in an uninterruptible wait.
+            fcntl.ioctl(fd, _I2C_TIMEOUT, 100)
+        except OSError:
+            # Best-effort by design: refusing the bound must not break an
+            # otherwise working setup — the timeout is hardening, not
+            # correctness (the repo raises loudly where the feature cannot
+            # work at all; here the status quo ante was fine).
+            pass
         self._fd = fd
 
     def close(self) -> None:
