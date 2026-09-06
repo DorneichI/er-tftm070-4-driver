@@ -23,8 +23,9 @@ workflow is authorized directly.
 1. Make sure `main` is green (CI badge in the README).
 2. Update `CHANGELOG.md`: move the `[Unreleased]` entries under the new
    version heading, dated.
-3. Commit, then tag **with a `v` prefix** — the version on PyPI comes
-   from the tag (setuptools_scm):
+3. Commit, open a pull request, and merge it — `main` is
+   branch-protected.  Then tag **with a `v` prefix** — the version on
+   PyPI comes from the tag (setuptools_scm):
    ```bash
    git tag v1.0.0
    git push origin v1.0.0
@@ -32,6 +33,13 @@ workflow is authorized directly.
 4. CI runs lint, tests, and builds on the tag, then publishes the
    sdist + wheel to PyPI via the trusted publisher. Watch the
    Actions run; the `release` environment gates the publish step.
+
+   The published wheel is pure Python (`py3-none-any`) — the optional
+   C accelerator is deliberately not compiled into it (a compiled wheel
+   would be platform-tagged and PyPI would reject it).  For the fast
+   path on a Pi, install from the sdist:
+   `pip install ertftm070 --no-binary ertftm070` (falls back to the
+   pure-Python backend if no compiler is available).
 
 ## After publishing
 
