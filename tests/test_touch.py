@@ -28,7 +28,9 @@ class FakeI2C:
         self.writes = []  # (reg, data bytes)
         self.reads = []  # (reg, n) — every read_reg call
         # reg -> bytes, or list[bytes]: a script, one answer popped per
-        # read; once dry it falls back to the all-zero default (sane).
+        # read.  Running a script dry fails the test: the all-zero
+        # default answers only registers nobody scripted, and an
+        # exhausted script is an unscripted read, not a "healthy" chip.
         self.responses = {}
 
     def open(self):
@@ -43,7 +45,12 @@ class FakeI2C:
     def read_reg(self, reg, n):
         data = self.responses.get(reg, b"\x00" * n)
         if isinstance(data, list):
-            data = data.pop(0) if data else b"\x00" * n
+            if not data:
+                raise AssertionError(
+                    f"FakeI2C script for 0x{reg:02X} ran dry: reads exceeded "
+                    "the scripted answers"
+                )
+            data = data.pop(0)
         self.reads.append((reg, n))
         assert len(data) == n, f"FakeI2C script for 0x{reg:02X} is {n} bytes short"
         return data
@@ -220,13 +227,17 @@ def test_touch_open_phantom_forever_warns_once_and_succeeds(
     _patch_time(monkeypatch)
     with caplog.at_level(logging.WARNING, logger="ertftm070"):
         t.open()
+        # one open really polled the full ~5 s budget before giving up:
+        # the fake clock advances 0.05 s per monotonic() call and each
+        # poll burns >= 2 of them, so ~100 status reads are the honest
+        # count and a wait-out that quit early must fail this
+        assert i2c.reads.count((0x02, 1)) >= 95
         # a second instance hitting the same phantom must stay silent
         t2 = Touch(bus, i2c=i2c)
         t2.open()
     assert t._opened is True and t2._opened is True
-    assert i2c.reads.count((0x02, 1)) >= 40  # polled the full ~5 s budget
     phantom = [r for r in caplog.records if "phantom" in r.getMessage()]
-    assert len(phantom) == 1  # once per process
+    assert len(phantom) == 1  # once per episode
 
 
 def test_touch_open_sane_chip_polls_status_exactly_once(bus, monkeypatch):
@@ -433,3 +444,124 @@ def test_touch_pins_validates_range_and_uniqueness():
     assert TouchPins(int_pin=None, rst_pin=None).int_pin is None
     assert TouchPins().int_pin == 15
     assert TouchPins().rst_pin == 0
+
+
+def test_touch_rejects_pins_that_collide_with_the_display_bus(bus):
+    # GPIO12 is DEFAULT_PINS.reset: a touch /RST there would actively
+    # reset the SSD1963 on every open(). The collision is a wiring
+    # mistake the driver can see, so it is rejected at construction.
+    with pytest.raises(ValueError, match="collide"):
+        Touch(bus, touch_pins=TouchPins(rst_pin=12), i2c=FakeI2C())
+    # the default touch wiring (INT 15, /RST 0) is disjoint — fine
+    assert Touch(bus, i2c=FakeI2C()).touch_pins == TouchPins()
+
+
+def test_touch_read_drops_phantom_points(bus):
+    # TD_STATUS claims five touches whose records all carry finger id 6
+    # (the phantom signature). read() must not surface them — a phantom
+    # that outlives open()'s wait-out is filtered on every read.
+    i2c = FakeI2C()
+    t = Touch(bus, i2c=i2c)
+    t.open()  # clean chip (all-zero defaults): sanity poll passes at once
+    i2c.responses[0x02] = b"\x35"
+    i2c.responses[0x03] = _PHANTOM_RECORDS
+    assert t.read() == []
+
+
+def test_touch_read_keeps_real_points_in_a_mixed_phantom_frame(bus):
+    # phantom records do not poison a frame that also holds a real touch
+    i2c = FakeI2C()
+    t = Touch(bus, i2c=i2c)
+    t.open()
+    real = bytes([0x03, 0x00, 0x21, 0x00, 0x00, 0x00])  # id 2, DOWN @0x300,0x100
+    i2c.responses[0x02] = b"\x35"  # five claimed: 1 real + 4 phantom
+    i2c.responses[0x03] = real + _PHANTOM_RECORDS[:24]
+    points = t.read()
+    assert len(points) == 1
+    assert (points[0].x, points[0].y) == (0x300, 0x100)
+
+
+def test_touch_wait_does_not_wake_on_phantom_status(bus, monkeypatch):
+    # a phantom frame (impossible ids) reads as NO touch: wait_touch must
+    # not return True on it — a finger-less panel would otherwise wake
+    # the app for the minutes the phantom persists
+    i2c = FakeI2C()
+    t = Touch(bus, i2c=i2c)
+    t.open()
+    i2c.responses[0x02] = b"\x35"
+    i2c.responses[0x03] = _PHANTOM_RECORDS
+    _patch_time(monkeypatch)
+    assert t.wait_touch(timeout=1.0) is False
+
+
+def test_touch_wait_wakes_on_a_real_point_in_a_phantom_frame(bus, monkeypatch):
+    # ...and a real finger among phantom records still wakes it
+    i2c = FakeI2C()
+    t = Touch(bus, i2c=i2c)
+    t.open()
+    real = bytes([0x03, 0x00, 0x21, 0x00, 0x00, 0x00])
+    i2c.responses[0x02] = b"\x35"
+    i2c.responses[0x03] = real + _PHANTOM_RECORDS[:24]
+    _patch_time(monkeypatch)
+    assert t.wait_touch(timeout=1.0) is True  # the tick-1 confirm sees it
+
+
+def test_touch_phantom_warn_rearms_once_the_chip_is_seen_sane(
+    bus, monkeypatch, caplog
+):
+    # the warn-once latch must cover one phantom EPISODE, not the process
+    # lifetime: a healthy open in between re-arms it, so a later episode
+    # (power cycle, second panel) is diagnosed again
+    import ertftm070.touch as touch_module
+
+    i2c = FakeI2C()
+    i2c.responses[0x02] = b"\x35"
+    i2c.responses[0x03] = _PHANTOM_RECORDS
+    monkeypatch.setattr(touch_module, "_warned_phantom", False)
+    _patch_time(monkeypatch)
+    with caplog.at_level(logging.WARNING, logger="ertftm070"):
+        t = Touch(bus, i2c=i2c)
+        t.open()  # episode 1: phantom forever -> warns once
+        i2c.responses[0x02] = b"\x00"  # the chip recovers...
+        t2 = Touch(bus, i2c=i2c)
+        t2.open()  # ...this open sees it sane: the latch re-arms
+        i2c.responses[0x02] = b"\x35"  # a fresh episode
+        t3 = Touch(bus, i2c=i2c)
+        t3.open()  # warns again
+    phantom = [r for r in caplog.records if "phantom" in r.getMessage()]
+    assert len(phantom) == 2  # one per episode
+
+
+def test_touch_open_releases_the_bus_when_the_chip_does_not_answer(
+    bus, monkeypatch
+):
+    # an I2C fault mid-open (wiring/power, propagated by _wait_sane on
+    # purpose) must not leak the transport fd open() already opened:
+    # the I2C object is closed on the way out and the touch stays
+    # "needs open()" so a retry runs the full open() again
+
+    class DeadChipI2C(FakeI2C):
+        def read_reg(self, reg, n):
+            if reg == 0x02:
+                raise RuntimeError("bus wedged mid-open (simulated fault)")
+            return super().read_reg(reg, n)
+
+    i2c = DeadChipI2C()
+    t = Touch(bus, i2c=i2c)
+    _patch_time(monkeypatch)
+    with pytest.raises(RuntimeError, match="wedged"):
+        t.open()
+    assert i2c.opened is True  # the transport did open...
+    assert i2c.closed is True  # ...and open() released it on the way out
+    assert t._opened is False  # a retry goes through the full open()
+
+
+def test_fake_i2c_script_that_runs_dry_fails_the_test():
+    # scripts are exact-trace fixtures: popping an exhausted script must
+    # fail loudly instead of returning the all-zero "healthy" default,
+    # which would silently paper over a read the test forgot to script
+    i2c = FakeI2C()
+    i2c.responses[0x02] = [b"\x00"]
+    assert i2c.read_reg(0x02, 1) == b"\x00"
+    with pytest.raises(AssertionError, match="ran dry"):
+        i2c.read_reg(0x02, 1)

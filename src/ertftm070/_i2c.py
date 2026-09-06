@@ -3,8 +3,8 @@
 The FT5x06 touch controller (docs/COMMUNITY-RESEARCH.md §6) needs just
 register-pointer + byte reads/writes; the kernel's i2c-dev character
 device provides exactly that through ``ioctl(I2C_SLAVE)`` +
-``read()``/``write()``.  Kept deliberately thin — everything testable
-lives in :mod:`ertftm070.touch` above it.
+``read()``/``write()``.  Kept deliberately thin — the touch-level
+behavior it serves lives in :mod:`ertftm070.touch` above it.
 """
 from __future__ import annotations
 
