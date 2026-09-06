@@ -19,10 +19,10 @@ in the core.
 
 > # ⚠️ THIS PROJECT IS COMPLETELY VIBECODED ⚠️
 >
-> **No human sat down and wrote this codebase. It was written by Claude
-> (an AI, via vibe coding) in a pair-programming session, with a human
-> in the loop whose job was watching the screen, describing what was
-> wrong, and demanding better.**
+> **No human sat down and wrote this codebase. It was written by
+> DeepSeek (the AI model, running in the Claude Code CLI) in a
+> vibe-coding session, with a human in the loop whose job was watching
+> the screen, describing what was wrong, and demanding better.**
 >
 > **The good part:** it genuinely works. Every feature was tested on
 > real hardware — the display was on a Raspberry Pi Zero W for every
