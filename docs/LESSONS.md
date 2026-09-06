@@ -81,6 +81,18 @@ Also note: the first read after `0x2E` is **not** a dummy on this chip —
 it returns real data. And bursts lose their final ~1.5 pixels when CS
 releases; write two trailing dummy pixels per burst to absorb it.
 
+**Panel-scale reads are unreliable** (added after the v1.0 bring-up):
+reading tens of thousands of words in one go drops ~1 word per 400 —
+the SSD1963's memory-read path does not stride rows the way the write
+path does, and sustained reads hit the same GRAM arbitration as writes.
+GRAM read-back remains an excellent debugger for *small* windows (the
+`gramcheck()` single-row check passes 8/8 every time), but do not treat
+a full-screen read-back as ground truth.  The *write* path has a related
+quirk: at pixel cycles faster than the verified ~1.6 µs/px, one write
+word per row can be dropped at the x=400 column (visible as a 1 px
+color sliver at a quadrant boundary, e.g. the 180° test image) — keep
+the calibrated cycle at the legacy/fill.c timing.
+
 ## 9. Speed limits
 
 - Python `RPi.GPIO` bit-banging: ~460 px/s. Fine for tests, absurd for

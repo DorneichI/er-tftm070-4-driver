@@ -394,7 +394,13 @@ class Display:
     # ------------------------------------------------------------------
 
     def _read_words(self, count: int):
-        """Read `count` 16-bit words from the controller (DC high)."""
+        """Read `count` 16-bit words from the controller (DC high).
+
+        Reliable for small counts (gramcheck-style windows).  Panel-scale
+        reads drop ~1 word per 400 — the SSD1963's read pointer does not
+        stride rows like the write path — so don't trust long reads as
+        ground truth.  See docs/LESSONS.md.
+        """
         b = self._bus_checked()
         for pin in self.pins.data:
             b.pin_mode(pin, False)

@@ -18,10 +18,11 @@
  *   GPCLR0  = 0x28  -> word 10  (write 1 = set pin low)
  *   GPLEV0  = 0x34  -> word 13  (pin levels)
  *
- * Timing: WR strobes use calibrated spin loops (~250 ns per phase on
- * any CPU — see calibrate()).  This reproduces the ~1.5 µs/pixel cycle
- * verified byte-perfect against GRAM read-back on a Pi Zero W, and
- * keeps the pulse widths sane on faster Pi models too.
+ * Timing: WR strobes use calibrated spin loops (~400 ns per phase on
+ * any CPU — see calibrate()).  This reproduces the ~1.6 µs/pixel cycle
+ * of the verified legacy/fill.c on a Pi Zero W; faster cycles hit
+ * panel-fetch contention (a dropped write word per row), so the
+ * verified timing is the target on every model.
  *
  * The GIL is held during pixel_stream(); a full-screen blit therefore
  * blocks the interpreter for ~0.6 s.  Releasing the GIL would mean
@@ -97,8 +98,11 @@ static void spin(void)
 }
 
 /* Measure the cost of one spin-loop iteration and re-scale spin_iter so
- * each phase lasts ~250 ns on this CPU — the timing verified on the Pi
- * Zero W.  Called lazily before the first strobed operation. */
+ * each phase lasts ~400 ns on this CPU — the ~1.6 µs/pixel cycle of the
+ * verified legacy/fill.c on the Pi Zero W.  (Faster cycles showed one
+ * dropped write word per row at the x=400 column — panel-fetch
+ * contention in the SSD1963's GRAM arbitration.)  Called lazily before
+ * the first strobed operation. */
 static void calibrate(void)
 {
     struct timespec t0, t1;
@@ -121,7 +125,7 @@ static void calibrate(void)
               / ((double)rounds * 2000.0);
     if (iter_ns <= 0.0)  /* clock too coarse; keep the Zero W default */
         return;
-    spin_iter = (int)(250.0 / iter_ns);
+    spin_iter = (int)(400.0 / iter_ns);
     if (spin_iter < 1)
         spin_iter = 1;
 }
