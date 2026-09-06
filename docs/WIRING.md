@@ -32,7 +32,12 @@ ER-TFTM070-4V2.1 datasheet (section 4.1) and were verified on hardware.
 | 23 | DB14   | GPIO23   | 16  | data, high byte bit 6 |
 | 24 | DB15   | GPIO24   | 18  | data, high byte bit 7 |
 | 25–32 | DB16–DB23 | —   | —   | unused (565 needs 16 bits) |
-| 33–38 | touch  | —        | —   | unused |
+| 33 | CTP /RST | —  | —   | capacitive touch reset (display-only wiring leaves it unconnected) |
+| 34 | CTP SCL  | —  | —   | touch I²C clock (→ Pi GPIO3/phys 5 for touch) |
+| 35 | CTP SDA  | —  | —   | touch I²C data (→ Pi GPIO2/phys 3 for touch) |
+| 36 | CTP INT  | —  | —   | touch interrupt, open-drain (→ any free GPIO for touch) |
+| 37 | CTP WAKE | —  | —   | touch hibernate-wake signal (optional) |
+| 38 | TP PEN/VSS | — | —   | resistive-pen ground; unused for CTP |
 | 39 | BL ON/OFF | GPIO25 | 22  | backlight: high = on |
 | 40 | VSS    | —        | —   | optional second ground |
 
@@ -40,6 +45,31 @@ ER-TFTM070-4V2.1 datasheet (section 4.1) and were verified on hardware.
 strapped for 16-bit 8080; one WR cycle writes one 16-bit pixel with the
 low byte on DB0–7 and the high byte on DB8–15. (R3/R4 only select
 8080-vs-6800 — they say nothing about bus width. See [LESSONS.md](LESSONS.md).)
+
+## Touch panel (optional)
+
+The V2.1 board ships with a **capacitive touch panel mounted by default**
+with its controller (FocalTech FT5206-family; datasheet revision 2.1:
+"Add Capacitive Touch Panel with its Controller and Connector"). Pins
+33–37 break out the controller; the pin labels are dual-purpose — TP for
+the 4-wire resistive variant (via the XPT2046 chip) and CTP for the
+capacitive one this board carries.
+
+Because it's I²C, the Pi needs **no extra hardware** — just three or
+four wires on top of the display wiring:
+
+| Display pin | CTP signal | Connect to |
+|---|---|---|
+| 34 | SCL | Pi GPIO3 (phys pin 5) — I²C clock |
+| 35 | SDA | Pi GPIO2 (phys pin 3) — I²C data |
+| 33 | /RST | any free GPIO, e.g. GPIO14 (phys 8) |
+| 36 | INT | any free GPIO, e.g. GPIO15 (phys 10); open-drain, Pi pull-up is fine |
+| 37 | WAKE | optional — leave unconnected, or another GPIO |
+
+Enable I²C (`raspi-config` → Interface Options, or `dtparam=i2c_arm=on`).
+Driver support (`ertftm070.touch`) is on the package roadmap; the kernel
+`ft5x06` driver + device-tree overlay is the alternative path (touch
+appears as a normal `/dev/input/eventX` device).
 
 ## Board configuration
 

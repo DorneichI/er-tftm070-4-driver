@@ -1,0 +1,12 @@
+# The sdist should carry only the package sources, README and LICENSE.
+# setuptools_scm adds every git-tracked file by default, and a scratch
+# setup.cfg appears transiently during the build — keep all of that out.
+prune .github
+prune dist
+prune docs
+prune examples
+prune legacy
+prune tests
+prune .venv*
+recursive-exclude src *.egg-info*
+exclude setup.cfg

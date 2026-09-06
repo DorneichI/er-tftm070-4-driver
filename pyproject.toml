@@ -1,0 +1,71 @@
+[build-system]
+requires = ["setuptools>=77", "wheel", "setuptools_scm>=8"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "ertftm070"
+dynamic = ["version"]
+description = "Python driver for the EastRising ER-TFTM070-4V2.1 7-inch TFT (SSD1963) on Raspberry Pi"
+readme = "README.md"
+license = "MIT"
+authors = [{ name = "Immanuel Dorneich" }]
+requires-python = ">=3.9"
+keywords = ["ssd1963", "tft", "display", "lcd", "raspberry-pi", "8080"]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Developers",
+    "Operating System :: POSIX :: Linux",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.9",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Programming Language :: C",
+    "Topic :: System :: Hardware",
+]
+
+[project.optional-dependencies]
+# The `Pillow` extra (spelled exactly like every doc says) is only needed
+# for Display.image(); the core has zero runtime deps.  The floor is 9.1:
+# Image.Transpose (used by rotate_image) landed in 9.1.0.
+Pillow = ["Pillow>=9.1"]
+dev = ["pytest>=7", "ruff>=0.6", "Pillow>=9.1", "build"]
+
+[project.scripts]
+ertftm070 = "ertftm070.__main__:main"
+
+[project.urls]
+Homepage = "https://github.com/DorneichI/er-tftm070-4-driver"
+Documentation = "https://github.com/DorneichI/er-tftm070-4-driver#readme"
+Repository = "https://github.com/DorneichI/er-tftm070-4-driver"
+Issues = "https://github.com/DorneichI/er-tftm070-4-driver/issues"
+
+[tool.setuptools]
+package-dir = { "" = "src" }
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+# The C extension makes pixel writes ~1400x faster than Python bit-banging,
+# but it is OPTIONAL: if no compiler is available (or the build fails for any
+# reason), pip install still succeeds and the pure-Python /dev/gpiomem
+# backend takes over automatically (with a warning at import time).
+[[tool.setuptools.ext-modules]]
+name = "ertftm070._fastio"
+sources = ["src/ertftm070/_fastio.c"]
+optional = true
+
+[tool.setuptools_scm]
+fallback_version = "0.1.0"
+
+[tool.ruff]
+target-version = "py39"
+line-length = 88
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "UP", "B"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["."]
