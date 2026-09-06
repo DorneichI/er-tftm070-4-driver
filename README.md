@@ -73,6 +73,8 @@ with Display() as lcd:                 # opens the bus, inits, backlight on
     lcd.sleep()
     lcd.wake()
 
+    pclk_khz, hz = lcd.refresh_rate()        # measured clocks (needs the TE wire)
+
 # leaving the with-block turns the backlight off and releases the GPIOs
 ```
 
@@ -84,13 +86,16 @@ ertftm070 bars            # 8 color bars, the classic test pattern
 ertftm070 fill F800       # solid fill
 ertftm070 image photo.png # show an image
 ertftm070 gramcheck       # write + read back GRAM (pixel-path proof)
+ertftm070 refresh         # measure PCLK + frame rate — names the crystal (needs TE)
+ertftm070 touch-test      # stream touches until Ctrl+C (needs the touch wires)
 ```
 
 The picture drawn by `bars`/`fill`/`image` stays on screen until Ctrl+C
 (which turns the backlight off and releases the GPIOs); pass `--once`
-to exit immediately instead. The diagnostics run once and exit with
-their verdict (0 = passed). Global options like `--once` and
-`--rotation` work before or after the subcommand.
+to exit immediately instead. `touch-test` also holds until Ctrl+C. The
+diagnostics run once and exit with their verdict (0 = passed). Global
+options like `--once` and `--rotation` work before or after the
+subcommand.
 
 Or from a source checkout: `python3 examples/color_bars.py`,
 `python3 examples/show_image.py photo.png`,
@@ -106,6 +111,9 @@ Or from a source checkout: `python3 examples/color_bars.py`,
 | Rotation | `lcd.rotation = 0 / 90 / 180 / 270` |
 | Backlight | `lcd.backlight(True / False)` |
 | Power | `lcd.sleep()` · `lcd.wake()` |
+| Tear-free updates | `vsync=True` on `fill_rect`/`image` — rows paced into vertical blanking (needs the TE wire; opt-in, see the docstring) |
+| Measured clocks | `lcd.refresh_rate()` → `(pclk_khz, hz)` · `lcd.vsync_wait()` |
+| Touch | `Touch(lcd.bus)` — `read(mapped=True)`, `wait_touch()`, `reset()` |
 | Diagnostics | `lcd.selftest()` · `lcd.gramcheck()` (both return bool) |
 | Colors | `rgb565(r, g, b)` → 16-bit 565 word |
 
@@ -166,14 +174,28 @@ is the resistive-pen ground, unused). It speaks I²C, so the Pi can talk
 to it with **no extra hardware** — just SCL/SDA to Pi GPIO 3/2, `/RST`
 and `INT` to any two free GPIOs, and I²C enabled.
 
-Touch support (`ertftm070.touch`) is the first roadmap item; v1.0 is
-display-only. See [docs/WIRING.md](docs/WIRING.md) for the pin details.
+Touch is implemented: `ertftm070.touch` ships with v1.0. See
+[docs/WIRING.md](docs/WIRING.md) for the pin details and
+[docs/COMMUNITY-RESEARCH.md](docs/COMMUNITY-RESEARCH.md) §6 for the
+controller facts: the V2.1 board ships the FT5206, the current V3 board
+the FT5316 (same FT5x06 register map), I²C address 0x38, and the driver
+needs almost no init — just timing and a dummy first read.
+
+```python
+from ertftm070 import Display
+from ertftm070.touch import Touch
+
+with Display() as lcd, Touch(lcd.bus) as touch:
+    touch.wait_touch()               # wake-on-touch primitive
+    for p in touch.read(mapped=True):  # logical 800x480 coordinates
+        lcd.fill_rect(p.x, p.y, 4, 4, 0xFFFF)
+```
 
 ## Roadmap
 
-- **Touch input** — userspace driver for the onboard FT5206 over I²C
-  (or kernel `ft5x06` driver + device-tree overlay as an alternative)
 - Backlight dimming — software PWM on the backlight pin
+  (register-based dimming via `0xBE`/`0xD0` would need the J3/J4 jumper
+  mod — see docs/COMMUNITY-RESEARCH.md §5)
 - Hardware vertical scroll (SSD1963 `0x33`/`0x37`)
 - GRAM screenshots — read the framebuffer back into a PIL image
 - Pi 5 support via a libgpiod backend

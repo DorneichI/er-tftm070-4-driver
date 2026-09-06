@@ -25,6 +25,12 @@ the whole screen. (Cheap, needs no instruments.)
 **Lesson:** R3/R4 on this board select 8080-vs-6800, **not** bus width.
 Don't trust "it says 8080" to mean 8-bit.
 
+Since confirmed against the primary sources: the SSD1963 has no bus-width
+strap at all — its only mode pin is CONF (8080/6800, datasheet Table 6-3),
+registers only ever use D[7:0] "regardless the width of the pixel data"
+(datasheet §7.1.3), and the board's R3/R4 is exactly that CONF strap
+(board datasheet §4.4). See [COMMUNITY-RESEARCH.md](COMMUNITY-RESEARCH.md) §3.
+
 ## 2. A white screen can be a perfectly healthy display
 
 An un-driven TFT with the backlight on is *uniform white*. It tells you
@@ -114,6 +120,41 @@ verifies byte-perfect.  Keep the calibrated cycle at the legacy/fill.c
 Display VDD (5 V, up to 300 mA) from the Pi's 5 V pin browned out the Pi
 once at plug-in (inrush). Steady state is fine with a good PSU; a
 separate 5 V ≥ 1 A supply with common ground is the safe permanent choice.
+
+## 11. Community corroboration (2026)
+
+A sweep of the Arduino/ESP32/STM32/RPi community's experience with this
+panel was done for issue #5; the full write-up with sources is
+[COMMUNITY-RESEARCH.md](COMMUNITY-RESEARCH.md). The parts that refine
+this page:
+
+- **The rotation claim, made precise** (refines §6-adjacent lore): on
+  the SSD1963, `0x36` A[7]/A[6] are *host fill-pointer direction* bits,
+  not ILI-style MY/MX — they reverse the write order inside the window
+  and scramble partial-window blits, which is exactly what we saw. The
+  true mirror bits are A[1]/A[0] (`0x22` ⇄ `0x21` rotates 180° with
+  zero coordinate changes, community-verified). **90°/270° hardware
+  rotation does not exist on this controller** — our software rotation
+  is the ecosystem's working pattern too (TFT_eSPI fakes it with A[5] +
+  width/height swap; UTFT rotates in software).
+- **The crystal frequency question is settled: 10 MHz.** Every figure
+  in §4 assumed a 10 MHz crystal, while UTFT's own "set PLL clock to
+  120M" comment next to our `0x1E` byte implies the 12 MHz crystals of
+  the boards UTFT wrote the table for. Measured via TE on connector
+  pin 8 (2026-09-06): 53.7 Hz → ~26.2 MHz PCLK — the 10 MHz prediction
+  (25.8 MHz) to within 2%; the 12 MHz prediction (31 MHz / 63.4 Hz) is
+  out. (`0xE7` read-back returns the FPR value, not a frequency —
+  don't use it for this.)
+- **`0x10`/`0x11` never touch the panel enable with our init.** Because
+  `0xB8 = 07 01` configures GPIO0 as a plain host output, the sleep
+  commands don't toggle it (datasheet §9.8); the effective power saving
+  of `Display.sleep()` is `0x28` plus the backlight GPIO.
+- **`0xBE`/`0xD0` are inert on the stock board** — jumper J3/J4 ships
+  with the backlight under *external* control (our GPIO), not the
+  SSD1963 PWM. The init writes are harmless no-ops; register dimming
+  only works after bridging J3.
+- **Our dropped-write mitigation is the community standard** — nobody
+  has a register fix; row-per-burst + trailing dummies is what works.
 
 ## The full debugging saga
 
