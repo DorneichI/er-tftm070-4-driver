@@ -3,14 +3,42 @@
 **A Python driver for the EastRising ER-TFTM070-4V2.1** — 7.0" TFT,
 800×480, SSD1963 controller — on a Raspberry Pi Zero/1/2/3/4.
 
-`pip install` it, open the display in three lines, blit Pillow images in
-~0.6 s. Verified on hardware (Pi Zero W, Raspberry Pi OS Trixie,
-September 2026); zero runtime dependencies in the core.
+```bash
+pip install ertftm070
+```
+
+Open the display in three lines, fill the screen in ~1.5 s, blit Pillow
+images, read the touch panel later (roadmap). Verified on hardware
+(Pi Zero W, Raspberry Pi OS, September 2026); zero runtime dependencies
+in the core.
 
 [![PyPI](https://img.shields.io/pypi/v/ertftm070)](https://pypi.org/project/ertftm070/)
 [![Python](https://img.shields.io/pypi/pyversions/ertftm070)](https://pypi.org/project/ertftm070/)
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 [![CI](https://github.com/DorneichI/er-tftm070-4-driver/actions/workflows/ci.yml/badge.svg)](https://github.com/DorneichI/er-tftm070-4-driver/actions/workflows/ci.yml)
+
+> # ⚠️ THIS PROJECT IS COMPLETELY VIBECODED ⚠️
+>
+> **No human sat down and wrote this codebase. It was written by Claude
+> (an AI, via vibe coding) in a pair-programming session, with a human
+> in the loop whose job was watching the screen, describing what was
+> wrong, and demanding better.**
+>
+> **The good part:** it genuinely works. Every feature was tested on
+> real hardware — the display was on a Raspberry Pi Zero W for every
+> release candidate, and the human confirmed the pixels with their own
+> eyes. 89 automated tests pass, CI is green, and the ugly hardware
+> quirks are documented instead of hidden.
+>
+> **The honest part:** no one has audited every line. There may be bugs
+> nobody has stepped on yet, design choices a real engineer would
+> question, and comments that overestimate their own cleverness. Treat
+> it accordingly: check the code before you trust your life (or your
+> graduation project) to it.
+>
+> MIT license, no warranty, no guarantees. If your display does
+> something you don't like, [open an issue](https://github.com/DorneichI/er-tftm070-4-driver/issues)
+> and a robot will be with you shortly.
 
 ---
 
@@ -22,9 +50,9 @@ pip install ertftm070[Pillow]   # + Pillow, for the image API
 ```
 
 `pip` compiles a tiny C extension at install time (the fast pixel path,
-~1400× faster than Python bit-banging). No compiler on the machine? The
-install still succeeds and a pure-Python fallback takes over — slightly
-slower, fully functional, with a warning telling you so.
+~40× faster than the pure-Python fallback). No compiler on the machine?
+The install still succeeds and the fallback takes over — slower, fully
+functional, with a warning telling you so.
 
 ## Quick start
 
@@ -34,7 +62,7 @@ Wire the display as described in [docs/WIRING.md](docs/WIRING.md), then:
 from ertftm070 import Display
 
 with Display() as lcd:                 # opens the bus, inits, backlight on
-    lcd.fill(0xF800)                  # red screen, ~0.6 s
+    lcd.fill(0xF800)                  # red screen, ~1.5 s
 
     lcd.fill_rect(10, 10, 100, 50, 0x07E0)   # partial update
     lcd.image(pil_image, x=20, y=20)         # blit a Pillow image
@@ -46,7 +74,7 @@ with Display() as lcd:                 # opens the bus, inits, backlight on
 # leaving the with-block turns the backlight off and releases the GPIOs
 ```
 
-Command-line equivalent:
+Command-line equivalent, no code required:
 
 ```bash
 ertftm070 selftest        # verify the wiring against the SSD1963 itself
@@ -56,10 +84,10 @@ ertftm070 image photo.png # show an image
 ertftm070 gramcheck       # write + read back GRAM (pixel-path proof)
 ```
 
-The picture drawn by bars/fill/image stays on screen until Ctrl+C
+The picture drawn by `bars`/`fill`/`image` stays on screen until Ctrl+C
 (which turns the backlight off and releases the GPIOs); pass `--once`
-to exit immediately instead.  The diagnostics run once and exit with
-their verdict (0 = passed).  Global options like `--once` and
+to exit immediately instead. The diagnostics run once and exit with
+their verdict (0 = passed). Global options like `--once` and
 `--rotation` work before or after the subcommand.
 
 Or from a source checkout: `python3 examples/color_bars.py`,
@@ -79,9 +107,9 @@ Or from a source checkout: `python3 examples/color_bars.py`,
 | Diagnostics | `lcd.selftest()` · `lcd.gramcheck()` (both return bool) |
 | Colors | `rgb565(r, g, b)` → 16-bit 565 word |
 
-Everything is configurable: `Display(pins=…, init_table=…, rotation=…)`.
-Defaults are the hardware-verified values. Full reference in
-[docs/API.md](docs/API.md).
+Everything is configurable: `Display(pins=…, init_table=…, rotation=…,
+write_passes=…)`. Defaults are the hardware-verified values. Full
+reference in [docs/API.md](docs/API.md).
 
 ## The one fact that changes everything
 
@@ -111,6 +139,22 @@ The display itself is plain 16-bit 8080 — Arduinos, ESP32s and friends
 drive it too (that's where the init tables came from). Only this Python
 package is Pi-specific.
 
+## Performance
+
+Full-screen fill (800×480×16-bit), measured on a Pi Zero W:
+
+- **~1.5 s** with the C extension (direct `/dev/gpiomem` register writes,
+  no syscalls in the hot loop)
+- **~10 s** with the pure-Python fallback
+- (For context: RPi.GPIO bit-banging manages ~460 px/s — the C path is
+  ~500× faster, which is why the extension exists.)
+
+`ertftm070.BACKEND` tells you which path is active (`"fast"`/`"slow"`);
+`ERTFTM070_FORCE_SLOW=1` forces the fallback. If a row ever shows a
+shifted pixel on your particular Pi (see LESSONS.md — the SSD1963
+occasionally swallows a write strobe), `Display(write_passes=2)` heals
+most of it at ~2× the time.
+
 ## Touch
 
 The V2.1 board ships with a **capacitive touch panel mounted by default**
@@ -136,19 +180,6 @@ Text, shapes and UI widgets are deliberately **not** part of the driver —
 draw them in Pillow and blit with `lcd.image()`. It's the same pattern
 at 60× less code.
 
-## Performance
-
-Full-screen updates (800×480×16-bit):
-
-- **~0.6 s** with the C extension (direct `/dev/gpiomem` register
-  writes, no syscalls in the hot loop, ~640k px/s)
-- **~3 s** with the pure-Python fallback
-- (For context: RPi.GPIO bit-banging manages ~460 px/s — the C path is
-  ~1400× faster, which is why the extension exists.)
-
-`ertftm070.BACKEND` tells you which path is active (`"fast"`/`"slow"`);
-`ERTFTM070_FORCE_SLOW=1` forces the fallback.
-
 ## Documentation
 
 | Doc | What it is |
@@ -168,8 +199,15 @@ pytest          # 89 tests, no hardware needed (a fake bus stands in)
 ruff check src tests examples
 ```
 
-CI runs lint + tests + builds on every push and publishes to PyPI from
-version tags (see [docs/RELEASING.md](docs/RELEASING.md)).
+CI runs lint + tests + builds on every push, CodeQL scans the Python,
+and the main branch is protected: merges go through pull requests,
+squash-only, and only when CI is green. Dependabot keeps the handful of
+dev dependencies fresh. See [SECURITY.md](SECURITY.md) to report a
+vulnerability privately, and [docs/RELEASING.md](docs/RELEASING.md) for
+how a version tag becomes a PyPI release.
+
+Contributions are welcome — same rules as everything else here: open a
+PR, keep CI green, and yes, feel free to have an AI write it.
 
 ## License
 
