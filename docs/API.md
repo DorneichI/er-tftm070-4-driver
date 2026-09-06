@@ -159,7 +159,9 @@ i2c=None)` — context manager, `open()` idempotent.
   wake-on-touch primitive.
 - `reset()` — pulse `/RST` low ≥5 ms (Trst), wait 300 ms (Trsi), then
   flush the first-report garbage. The recovery hammer for a wedged
-  chip. Raises if no `/RST` pin is configured.
+  chip; it also waits out the phantom power-on state (impossible
+  TD_STATUS claims) for up to ~5 s before proceeding. Raises if no
+  `/RST` pin is configured.
 - `close()` — release the I²C bus.
 
 ### `TouchPoint`

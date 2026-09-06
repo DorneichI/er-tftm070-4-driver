@@ -49,6 +49,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   ~0.6 s).  The bytes and WR strobes at the pins are unchanged; a custom
   `Bus` passed to `Display(backend=...)` must now implement `row_blit`.
 
+### Fixed
+
+- `Touch.open()`/`reset()` now drive the `/RST` pin with a real low pulse
+  (`open()` previously only set it high) and then poll TD_STATUS for up to
+  ~5 s until the FT5x06 leaves its phantom power-on state — a status
+  claiming five touches whose records carry impossible finger ids (> 4)
+  and frozen garbage coordinates, which a write-0 to `0x02` or a `/RST`
+  pulse alone does not clear (bench-verified 2026-09-06).  A timeout logs
+  a one-time warning and continues (the chip usually self-recovers within
+  minutes).
+- I2C transfers are now bounded: `_i2c.I2C.open()` sets the i2c-dev
+  `I2C_TIMEOUT` ioctl (100 × 10 ms = 1 s per transfer), so a wedged
+  FT5x06 holding the bus can no longer hang the process in an
+  uninterruptible D-state wait.
+
 ## [0.0.0] — 2026-09-05
 
 Hardware bring-up era (pre-package):
