@@ -20,5 +20,6 @@ CLI arguments) reaches the bus.
 Out of scope: issues that require physical access to the device's GPIO
 pins — no software can prevent those.
 
-Aim: acknowledge within 48 hours, fix release within a week where
-warranted.
+There is no response SLA. Reports are handled on a best-effort basis,
+whenever the human gets to them — which may be a while. Do not count on
+a prompt fix.
