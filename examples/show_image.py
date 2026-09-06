@@ -2,10 +2,16 @@
 
 Run: python3 examples/show_image.py photo.png [--x N] [--y N]
 Needs the pillow extra: pip install ertftm070[Pillow]
+Images larger than the screen are scaled down (aspect preserved); the
+picture stays on screen until you press Enter (or Ctrl+C).
 """
 import argparse
+import sys
 
-from PIL import Image
+try:
+    from PIL import Image
+except ImportError:
+    sys.exit("this example needs the pillow extra: pip install 'ertftm070[Pillow]'")
 
 from ertftm070 import Display
 
@@ -18,7 +24,18 @@ def main() -> None:
     args = parser.parse_args()
 
     with Display() as lcd:
-        lcd.image(Image.open(args.path), args.x, args.y)
+        if args.x >= lcd.width or args.y >= lcd.height:
+            parser.error(f"position ({args.x},{args.y}) is outside the display")
+        try:
+            img = Image.open(args.path)
+        except OSError as exc:
+            parser.error(f"cannot open {args.path!r}: {exc}")
+        lcd.image(img, args.x, args.y, fit=True)
+        print(f"showing {img.size[0]}x{img.size[1]} - press Enter to turn it off...")
+        try:
+            input()
+        except (EOFError, KeyboardInterrupt):
+            pass
 
 
 if __name__ == "__main__":

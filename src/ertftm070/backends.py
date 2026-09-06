@@ -25,8 +25,10 @@ import os
 import struct
 import time
 import warnings
+from array import array
 from typing import Any, Protocol
 
+from .errors import NotOnRaspberryPi
 from .pins import DEFAULT_PINS, Pins
 
 # BCM2835-style GPIO register byte offsets (see _fastio.c for the map).
@@ -35,6 +37,80 @@ _GPCLR0 = 0x28
 _GPLEV0 = 0x34
 _FSEL = [0x00, 0x04, 0x08, 0x0C, 0x10, 0x14]  # one word per 10 pins
 _MAP_LEN = 0xB4
+
+# SoCs whose /dev/gpiomem maps the BCM2835-style GPIO block both backends
+# write.  bcm2711 is the newest supported (Pi 4B/400/CM4); Pi 5's
+# BCM2712 exposes an incompatible RP1 block under the same device node.
+_SUPPORTED_SOC = (
+    b"brcm,bcm2708",
+    b"brcm,bcm2709",
+    b"brcm,bcm2710",
+    b"brcm,bcm2835",
+    b"brcm,bcm2836",
+    b"brcm,bcm2837",
+    b"brcm,bcm2711",
+)
+
+
+def _read_compatible() -> bytes:
+    """The DT compatible strings of the running machine (NUL-separated)."""
+    with open("/proc/device-tree/compatible", "rb") as fh:
+        return fh.read()
+
+
+def _check_platform() -> None:
+    """Raise :class:`~ertftm070.NotOnRaspberryPi` unless we run on a
+    supported Raspberry Pi.
+
+    Both backends write BCM2835-style register offsets into whatever
+    ``/dev/gpiomem`` maps.  On a Pi 5 that is the RP1 block, where the
+    same offsets address entirely different registers — a silent wrong
+    result, not a crash — so the SoC is verified before the mapping is
+    touched.
+    """
+    try:
+        compatible = _read_compatible()
+    except OSError as exc:
+        raise NotOnRaspberryPi(
+            "no /proc/device-tree/compatible — this does not look like a "
+            "Raspberry Pi running Linux"
+        ) from exc
+    if not any(soc in compatible for soc in _SUPPORTED_SOC):
+        raise NotOnRaspberryPi(
+            "unsupported SoC: ertftm070 drives the BCM2835-family GPIO block "
+            "(Raspberry Pi Zero/1/2/3/4).  Pi 5 (BCM2712/RP1) and other boards "
+            "have incompatible GPIO registers."
+        )
+
+
+def _word_view(buf: Any):
+    """Expose ``buf`` as a sequence of 16-bit words for pixel streaming.
+
+    ``array('H')`` buffers and 16-bit memoryviews pass through; any
+    1-byte-per-item buffer (``bytes``, ``bytearray``, a ``'B'``
+    memoryview) is reinterpreted as little-endian word pairs — low byte
+    first, matching the bus's ``bit 0 = DB0`` rule and the C backend's
+    byte pairing.  Anything else (wider items, 2-D buffers) is a
+    TypeError, and an odd byte count cannot form whole words.
+    """
+    if isinstance(buf, array) and buf.typecode == "H":
+        return buf
+    if isinstance(buf, memoryview):
+        view = buf
+    else:
+        view = memoryview(buf)
+    if view.format == "H":
+        return view
+    if view.ndim != 1 or view.itemsize != 1:
+        raise TypeError(
+            "pixel buffer must be 16-bit words: array('H'), a 16-bit "
+            "memoryview, or bytes/bytearray of word pairs"
+        )
+    if len(view) % 2:
+        raise ValueError(
+            "pixel buffer length must be even (one 16-bit word per pixel)"
+        )
+    return view.cast("H")
 
 
 class Bus(Protocol):
@@ -59,14 +135,20 @@ class Bus(Protocol):
         """One register byte on DB0-7 with a WR strobe."""
 
     def read_word(self) -> int:
-        """Sample 16 bits on DB0-15 with an RD strobe."""
+        """Sample 16 bits on DB0-15 with an RD strobe.
+
+        The backend flips DB0-15 to inputs for the strobe and restores
+        them to outputs afterwards, so a read can never leave the bus in
+        input mode (even across an exception).
+        """
 
     def pixel_stream(self, buf: Any) -> None:
         """One WR strobe per 16-bit word (bit 0 = DB0), + 2 trailing dummies.
 
         ``buf`` must be a contiguous buffer of 16-bit words —
-        ``array("H")``, ``memoryview``, or ``bytes``.  CS/DC framing is
-        the caller's job.
+        ``array("H")``, a 16-bit memoryview, or ``bytes``/``bytearray``
+        holding word pairs (low byte first).  CS/DC framing is the
+        caller's job.
         """
 
 
@@ -116,7 +198,13 @@ def get_backend(pins: Pins = DEFAULT_PINS, backend: Bus | None = None) -> Bus:
 
 
 class _FastioBus:
-    """Wraps ``ertftm070._fastio``.  Thin; all timing lives in C."""
+    """Wraps ``ertftm070._fastio``.  Thin; all timing lives in C.
+
+    The C module is single-owner: its registers are module state, so a
+    second ``open()`` (e.g. a second :class:`~ertftm070.Display` while
+    the first is open) raises ``RuntimeError`` instead of silently
+    sharing a mapping, and closing one bus can never tear down another's.
+    """
 
     def __init__(self, pins: Pins):
         self.pins = pins
@@ -127,9 +215,18 @@ class _FastioBus:
             raise RuntimeError("bus not open — call open() first")
         return self._m
 
+    @staticmethod
+    def _wiring(pins: Pins) -> tuple:
+        """The 18-int pin tuple the C backend strokes: 8 low + 8 high +
+        WR + RD data-bus pins (BCM GPIO numbers)."""
+        return tuple(pins.data_low) + tuple(pins.data_high) + (pins.wr, pins.rd)
+
     def open(self) -> None:
+        _check_platform()
+        if self._m is not None:
+            return  # idempotent, like _MmioBus.open
+        _fastio.open(self._wiring(self.pins))  # RuntimeError if another bus owns it
         self._m = _fastio
-        self._m.open()
 
     def close(self) -> None:
         if self._m is not None:
@@ -176,10 +273,18 @@ class _MmioBus:
         self._set_high = [_byte_mask(v, pins.data_high) for v in range(256)]
         self._wr = 1 << pins.wr
         self._rd = 1 << pins.rd
+        # Pre-packed register words: strobes then need one pack per pixel
+        # instead of four (the mmap slice itself is the write).
+        pack = struct.pack
+        self._clr_low_bytes = pack("<I", self._clr_low)
+        self._clr_bytes = pack("<I", self._clr_all)
+        self._wr_bytes = pack("<I", self._wr)
+        self._rd_bytes = pack("<I", self._rd)
 
     def open(self) -> None:
         if self._mm is not None:
             return
+        _check_platform()
         self._fd = os.open("/dev/gpiomem", os.O_RDWR | os.O_SYNC)
         try:
             self._mm = mmap.mmap(
@@ -223,45 +328,46 @@ class _MmioBus:
 
     def write_byte(self, value: int) -> None:
         mm = self._check()
-        mm[_GPCLR0 : _GPCLR0 + 4] = struct.pack("<I", self._clr_low)
+        mm[_GPCLR0 : _GPCLR0 + 4] = self._clr_low_bytes
         mm[_GPSET0 : _GPSET0 + 4] = struct.pack("<I", self._set_low[value & 0xFF])
-        mm[_GPCLR0 : _GPCLR0 + 4] = struct.pack("<I", self._wr)
-        mm[_GPSET0 : _GPSET0 + 4] = struct.pack("<I", self._wr)
+        mm[_GPCLR0 : _GPCLR0 + 4] = self._wr_bytes
+        mm[_GPSET0 : _GPSET0 + 4] = self._wr_bytes
 
     def read_word(self) -> int:
         mm = self._check()
         for pin in self.pins.data:
-            self.pin_mode(pin, False)
-        mm[_GPCLR0 : _GPCLR0 + 4] = struct.pack("<I", self._rd)
+            self.pin_mode(pin, False)  # data lines to inputs
+        mm[_GPCLR0 : _GPCLR0 + 4] = self._rd_bytes  # RD low: sample window
         time.sleep(0.000002)  # let the controller drive the bus
         lev = self._read_word_reg(_GPLEV0)
-        mm[_GPSET0 : _GPSET0 + 4] = struct.pack("<I", self._rd)
+        mm[_GPSET0 : _GPSET0 + 4] = self._rd_bytes  # RD high: release
         value = 0
         for bit, pin in enumerate(self.pins.data):
             if lev & (1 << pin):
                 value |= 1 << bit
-            self.pin_mode(pin, True)
+            self.pin_mode(pin, True)  # restore: back to outputs
         return value
 
     def pixel_stream(self, buf: Any) -> None:
         mm = self._check()
-        clr = self._clr_all
+        view = _word_view(buf)
+        clr_b, wr_b = self._clr_bytes, self._wr_bytes
         set_low, set_high = self._set_low, self._set_high
-        wr, gpset, gpclr = self._wr, _GPSET0, _GPCLR0
         pack = struct.pack
+        gpset, gpclr = _GPSET0, _GPCLR0
         last = 0
-        for v in buf:
+        for v in view:
             last = set_low[v & 0xFF] | set_high[v >> 8]
-            mm[gpclr : gpclr + 4] = pack("<I", clr)
+            mm[gpclr : gpclr + 4] = clr_b
             mm[gpset : gpset + 4] = pack("<I", last)
-            mm[gpclr : gpclr + 4] = pack("<I", wr)
-            mm[gpset : gpset + 4] = pack("<I", wr)
+            mm[gpclr : gpclr + 4] = wr_b
+            mm[gpset : gpset + 4] = wr_b
         # 2 trailing dummy pixels — absorb the burst-tail quirk
         for _ in range(2):
-            mm[gpclr : gpclr + 4] = pack("<I", clr)
+            mm[gpclr : gpclr + 4] = clr_b
             mm[gpset : gpset + 4] = pack("<I", last)
-            mm[gpclr : gpclr + 4] = pack("<I", wr)
-            mm[gpset : gpset + 4] = pack("<I", wr)
+            mm[gpclr : gpclr + 4] = wr_b
+            mm[gpset : gpset + 4] = wr_b
 
 
 def _byte_mask(value: int, pins) -> int:

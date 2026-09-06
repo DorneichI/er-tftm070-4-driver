@@ -12,6 +12,7 @@ Display(
     auto_init: bool = True,
     backlight: bool = True,
     rotation: int = 0,
+    write_passes: int = 1,
 )
 ```
 
@@ -37,8 +38,10 @@ Attributes: `width`, `height` (follow the rotation), `pins`, `rotation`.
 **Drawing** — all colors are 16-bit RGB565 words (`rgb565(r, g, b)`).
 
 - `fill(color)` — fill the whole (rotated) screen. Fast path, ~0.6 s.
-- `fill_rect(x, y, w, h, color)` — one window + one continuous burst;
-  the right way to do partial updates (redraw only what changed).
+- `fill_rect(x, y, w, h, color)` — one window, written one row per burst
+  (a swallowed write word can then shift only one row — see
+  `docs/LESSONS.md`); the right way to do partial updates (redraw only
+  what changed).
 - `set_pixel(x, y, color)` — single-pixel window write. Fine for sparse
   updates; use `fill_rect`/`image` for anything dense.
 - `image(pil_image, x=0, y=0, fit=False)` — convert a Pillow image to
@@ -49,8 +52,10 @@ Attributes: `width`, `height` (follow the rotation), `pins`, `rotation`.
 
 **Display state**
 
-- `rotation` (property) — `0`/`90`/`180`/`270`; setting it rewrites the
-  address-mode register (`0x36`) and swaps `width`/`height`.
+- `rotation` (property) — `0`/`90`/`180`/`270`.  Rotation is pure
+  software: the panel keeps its verified `0x36 = 0x08` (the flip bits
+  scramble the GRAM write pointer on this controller) and
+  `width`/`height` swap to follow.  See `docs/LESSONS.md`.
 - `backlight(on)` — backlight pin high/low.
 - `sleep()` / `wake()` — display off + enter sleep / exit sleep +
   display on.
@@ -73,9 +78,9 @@ Attributes: `width`, `height` (follow the rotation), `pins`, `rotation`.
 
 ### Errors
 
-- `Ertftm070Error` — base class.
-- `SSD1963Error` — the controller answered incorrectly.
-- `NotOnRaspberryPi` — no usable `/dev/gpiomem` (Pi Zero–4 only).
+- `Ertftm070Error` — base class for package errors.
+- `NotOnRaspberryPi` — unsupported hardware: not a Pi, or a Pi 5 (RP1
+  GPIO controller; different registers, not supported yet).
 - `ValueError` — bad bounds, rotation values, or pin configuration.
 
 ## `Pins`

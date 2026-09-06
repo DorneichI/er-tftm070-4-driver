@@ -56,8 +56,11 @@ ertftm070 image photo.png # show an image
 ertftm070 gramcheck       # write + read back GRAM (pixel-path proof)
 ```
 
-The picture stays on screen until Ctrl+C (which turns the backlight off
-and releases the GPIOs); pass `--once` to exit immediately instead.
+The picture drawn by bars/fill/image stays on screen until Ctrl+C
+(which turns the backlight off and releases the GPIOs); pass `--once`
+to exit immediately instead.  The diagnostics run once and exit with
+their verdict (0 = passed).  Global options like `--once` and
+`--rotation` work before or after the subcommand.
 
 Or from a source checkout: `python3 examples/color_bars.py`,
 `python3 examples/show_image.py photo.png`,
@@ -161,7 +164,7 @@ Full-screen updates (800×480×16-bit):
 
 ```bash
 pip install -e ".[dev]"
-pytest          # 55 tests, no hardware needed (a fake bus stands in)
+pytest          # 89 tests, no hardware needed (a fake bus stands in)
 ruff check src tests examples
 ```
 

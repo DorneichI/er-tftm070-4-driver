@@ -70,6 +70,33 @@ def test_set_pixel(display, bus):
     display.open()
     display.set_pixel(400, 240, 0xFFFF)
     assert bus.streams[-1] == [0xFFFF]
+    assert len(bus.streams) == 1  # one row-burst
+
+
+def test_set_pixel_honors_write_passes(bus):
+    # set_pixel goes through _blit_rows: heal passes apply to it too
+    display = Display(backend=bus, write_passes=2)
+    display.open()
+    bus.streams.clear()
+    display.set_pixel(100, 50, 0x001F)
+    assert len(bus.streams) == 2
+    assert bus.streams[0] == bus.streams[1] == [0x001F]
+    # both passes address the same single-row window (y0 == y1 == 50)
+    stream = bus.bytes_written
+    rows = [k for k, (dc, b) in enumerate(stream) if dc is False and b == 0x2B]
+    for i in rows:
+        assert [b for _, b in stream[i + 1 : i + 5]] == [0x00, 0x32, 0x00, 0x32]
+
+
+def test_set_pixel_rotation_maps_the_window(display, bus):
+    display.open()
+    display.rotation = 90
+    display.set_pixel(0, 0, 0xF800)  # logical origin -> controller col 0, row 479
+    stream = bus.bytes_written
+    i = stream.index((False, 0x2A))
+    assert [b for _, b in stream[i + 1 : i + 5]] == [0x00, 0x00, 0x00, 0x00]  # col 0
+    j = stream.index((False, 0x2B))
+    assert [b for _, b in stream[j + 1 : j + 5]] == [0x01, 0xDF, 0x01, 0xDF]  # row 479
 
 
 def test_image_blit(display, bus):
@@ -112,6 +139,16 @@ def test_image_without_fit_raises_when_rotated(display, bus):
     im = Image.new("RGB", (800, 480), (255, 0, 0))
     with pytest.raises(ValueError):
         display.image(im)  # 800 wide does not fit the 480-wide screen
+
+
+def test_image_origin_outside_screen_raises_value_error(display, bus):
+    # regression: fit=True used to compute the fit box from (width - x)
+    # FIRST, so x == width surfacing a raw PIL ZeroDivisionError
+    display.open()
+    im = Image.new("RGB", (10, 10))
+    for x, y in ((800, 0), (0, 480), (801, 5), (-1, 0), (0, -5)):
+        with pytest.raises(ValueError):
+            display.image(im, x=x, y=y, fit=True)
 
 
 def _asymmetric_image():

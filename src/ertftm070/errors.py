@@ -5,10 +5,6 @@ class Ertftm070Error(Exception):
     """Base class for all errors raised by ertftm070."""
 
 
-class SSD1963Error(Ertftm070Error):
-    """The display controller answered incorrectly (failed self-test etc.)."""
-
-
 class NotOnRaspberryPi(Ertftm070Error):
     """No usable /dev/gpiomem — not running on a supported Raspberry Pi.
 

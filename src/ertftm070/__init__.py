@@ -26,7 +26,7 @@ from importlib.metadata import PackageNotFoundError, version
 from . import backends
 from .colors import rgb565
 from .display import Display
-from .errors import Ertftm070Error, NotOnRaspberryPi, SSD1963Error
+from .errors import Ertftm070Error, NotOnRaspberryPi
 from .init import INIT_ALT, INIT_BD, INIT_UTFT
 from .pins import DEFAULT_PINS, Pins
 
@@ -46,7 +46,6 @@ __all__ = [
     "INIT_ALT",
     "INIT_BD",
     "Ertftm070Error",
-    "SSD1963Error",
     "NotOnRaspberryPi",
     "BACKEND",
     "__version__",

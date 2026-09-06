@@ -44,9 +44,11 @@ python -c "import ertftm070; print(ertftm070.__version__, ertftm070.BACKEND)"
 
 ## If you need to yank a release
 
-```bash
-pip install twine
-twine upload --repository-url https://upload.pypi.org/legacy/ -u __token__ .
-# or, via the PyPI web UI: project → Release → Yank
-```
-Yanking hides the release from installs but keeps the filename reserved.
+Yanking hides the release from new installs but keeps the filename
+reserved.  There is no CLI for it — twine can only upload, never remove
+files — so use the PyPI web UI:
+
+project → **Manage → Releases → (…)** → **Yank** (pick a reason, confirm)
+
+Anyone already on the yanked version keeps it; new installs get the
+newest available one instead.

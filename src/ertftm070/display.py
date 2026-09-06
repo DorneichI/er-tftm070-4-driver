@@ -363,12 +363,16 @@ class Display:
     def set_pixel(self, x: int, y: int, color: int) -> None:
         """Set a single pixel (window + one-word stream).
 
+        Written through :meth:`_blit_rows` — a single row burst with the
+        trailing dummies, and ``write_passes`` honored — so a swallowed
+        write word heals exactly like any other draw call.
+
         Fine for sparse updates; use :meth:`fill_rect` or :meth:`image`
         for anything dense.
         """
         self._check_bounds(x, y, 1, 1)
-        self._set_window(x, y, x, y)
-        self._blit(array("H", [color & 0xFFFF]))
+        cx0, cy0, cx1, cy1 = _map_rect(self._rotation, x, y, x, y)
+        self._blit_rows(array("H", [color & 0xFFFF]), cx0, cy0, cx1, cy1)
 
     def image(
         self, img: Image.Image, x: int = 0, y: int = 0, fit: bool = False
@@ -390,6 +394,13 @@ class Display:
 
         Requires the ``pillow`` extra: ``pip install ertftm070[Pillow]``.
         """
+        # Origin outside the screen must fail cleanly BEFORE fit computes a
+        # box from (width - x): a box of 0 or negative width would surface
+        # as a raw PIL thumbnail() ZeroDivisionError/ValueError instead.
+        if x < 0 or y < 0 or x >= self.width or y >= self.height:
+            raise ValueError(
+                f"origin ({x},{y}) outside the {self.width}x{self.height} display"
+            )
         if fit:
             img = fit_image(img, self.width - x, self.height - y)
         w, h = img.size
@@ -446,20 +457,22 @@ class Display:
     def _read_words(self, count: int):
         """Read `count` 16-bit words from the controller (DC high).
 
+        The backend flips DB0-15 to inputs for each word's RD strobe and
+        restores them to outputs right after sampling (see the Bus
+        protocol), so no direction management belongs here — a whole-read
+        flip would also leave the bus wedged in input mode if anything
+        raised mid-read.
+
         Reliable for small counts (gramcheck-style windows).  Panel-scale
         reads drop ~1 word per 400 — the SSD1963's read pointer does not
         stride rows like the write path — so don't trust long reads as
         ground truth.  See docs/LESSONS.md.
         """
         b = self._bus_checked()
-        for pin in self.pins.data:
-            b.pin_mode(pin, False)
         b.pin_write(self.pins.cs, False)
         b.pin_write(self.pins.dc, True)
         out = [b.read_word() for _ in range(count)]
         b.pin_write(self.pins.cs, True)
-        for pin in self.pins.data:
-            b.pin_mode(pin, True)
         return out
 
     def selftest(self) -> bool:

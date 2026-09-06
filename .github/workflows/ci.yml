@@ -10,7 +10,8 @@ jobs:
     runs-on: ubuntu-latest
     strategy:
       matrix:
-        python: ["3.9", "3.13"]
+        # 3.10-3.12 are claimed in the pyproject classifiers — test them.
+        python: ["3.9", "3.10", "3.11", "3.12", "3.13"]
     steps:
       - uses: actions/checkout@v4
         with:
@@ -36,6 +37,13 @@ jobs:
       - run: pip install build twine
       - run: python -m build
       - run: twine check dist/*
+      - name: the sdist must not ship dev-only directories
+        # egg-info/PKG-INFO must stay (sdist installs reproduce the version
+        # from them); a transient setup.cfg may be snapshotted by
+        # setuptools_scm mid-build and cannot be excluded via MANIFEST.in.
+        run: |
+          tar tzf dist/ertftm070-*.tar.gz | grep -E '(^|/)(tests/|examples/|legacy/|docs/|\.github/|\.venv)' \
+            && { echo "sdist contains dev-only directories:"; tar tzf dist/ertftm070-*.tar.gz | grep -E '(^|/)(tests/|examples/|legacy/|docs/|\.github/|\.venv)'; exit 1; } || true
       - uses: actions/upload-artifact@v4
         with:
           name: dist

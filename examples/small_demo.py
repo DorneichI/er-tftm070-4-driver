@@ -3,9 +3,13 @@
 Run: python3 examples/small_demo.py
 Needs the pillow extra for the gradient/text part.
 """
+import sys
 import time
 
-from PIL import Image, ImageDraw
+try:
+    from PIL import Image, ImageDraw
+except ImportError:
+    sys.exit("this example needs the pillow extra: pip install 'ertftm070[Pillow]'")
 
 from ertftm070 import Display, rgb565
 

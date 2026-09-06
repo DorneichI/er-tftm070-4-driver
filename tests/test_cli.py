@@ -79,3 +79,45 @@ def test_image_subcommand(bus):
 def test_parser_requires_a_command():
     with pytest.raises(SystemExit):
         build_parser().parse_args([])
+
+
+def test_fill_rejects_invalid_hex():
+    with pytest.raises(SystemExit) as exc:
+        _args(["fill", "xyz"])
+    assert exc.value.code == 2
+
+
+def test_fill_rejects_out_of_range_hex():
+    # "FF0000" & 0xFFFF would silently paint black — reject instead
+    with pytest.raises(SystemExit) as exc:
+        _args(["fill", "FF0000"])
+    assert exc.value.code == 2
+    with pytest.raises(SystemExit) as exc:
+        _args(["fill", "-1"])
+    assert exc.value.code == 2
+
+
+def test_fill_without_color_rejected():
+    with pytest.raises(SystemExit) as exc:
+        _args(["fill"])
+    assert exc.value.code == 2
+
+
+def test_global_options_accepted_before_and_after_subcommand():
+    # regression: argparse used to reject them after the subcommand, so
+    # the natural "ertftm070 bars --once" was a usage error
+    before = _args(["--rotation", "90", "--once", "bars"])
+    after = _args(["bars", "--rotation", "90", "--once"])
+    assert before.rotation == after.rotation == 90
+    assert before.once is after.once is True
+    assert _args(["selftest", "--once"]).once is True
+    assert _args(["fill", "F800", "--rotation", "0"]).rotation == 0
+    assert _args(["--init", "alt", "fill", "F800"]).init == "alt"
+    assert _args(["fill", "F800", "--init", "bd"]).init == "bd"
+
+
+def test_run_accepts_flags_after_subcommand(bus):
+    display = _fake_display(bus)
+    display.open()
+    assert run(_args(["fill", "F800", "--once"]), display=display) == 0
+    assert all(set(s) == {0xF800} for s in bus.streams)

@@ -10,20 +10,58 @@ handles it for this panel.  See ``docs/INIT-SEQUENCE.md``.
 """
 from __future__ import annotations
 
+import sys
 from array import array
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
     from PIL import Image
 
+# Point LUTs for the 565 packing below: hi = (r & 0xF8) | (g >> 5),
+# lo = ((g & 0x1C) << 3) | (b >> 3) — the same truncation rgb565() does,
+# split into per-plane 8-bit lookups so Pillow's C loop does the work.
+_HI_R = [i & 0xF8 for i in range(256)]
+_HI_G = [i >> 5 for i in range(256)]
+_LO_G = [(i & 0x1C) << 3 for i in range(256)]
+_LO_B = [i >> 3 for i in range(256)]
+
 
 def rgb565(r: int, g: int, b: int) -> int:
     """Pack 8-bit RGB into a 16-bit 565 word (0..65535).
 
+    Each channel must be in 0..255 (as Pillow delivers); anything else
+    raises ``ValueError`` instead of silently wrapping into a different
+    color.
+
     >>> rgb565(255, 0, 0)
     63488
     """
+    if not (0 <= r <= 255 and 0 <= g <= 255 and 0 <= b <= 255):
+        raise ValueError(f"RGB channels must be 0..255, got ({r}, {g}, {b})")
     return ((r >> 3) << 11) | ((g >> 2) << 5) | (b >> 3)
+
+
+def _has_alpha(image: Image.Image) -> bool:
+    """True if the image carries transparency of any kind."""
+    return "A" in image.mode or "transparency" in image.info
+
+
+def _flatten_alpha(image: Image.Image) -> Image.Image:
+    """Composite an image's alpha onto black (no-op without alpha).
+
+    ``convert("RGB")`` *drops* the alpha band instead of blending it, so
+    semi-transparent pixels would otherwise show at full intensity.
+    Covers RGBA/LA/PA, paletted images with a transparency index, and
+    PNG-style color-key transparency in RGB/L (Pillow stores those as
+    ``image.info["transparency"]`` and honors them on ``convert("RGBA")``).
+    """
+    if _has_alpha(image):
+        from PIL import Image as _PIL  # lazy — pillow extra only
+
+        rgba = image.convert("RGBA")
+        black = _PIL.new("RGBA", rgba.size, (0, 0, 0, 255))
+        return _PIL.alpha_composite(black, rgba)
+    return image
 
 
 def rgb888_to_565_buffer(image: Image.Image) -> array:
@@ -31,20 +69,28 @@ def rgb888_to_565_buffer(image: Image.Image) -> array:
 
     Returns an ``array('H')`` of ``width * height`` 16-bit words in
     row-major order, ready for :meth:`ertftm070.Display.image`.
-    The image is converted to RGB first, so anything Pillow can open
-    (PNG, JPEG, GIF, …) works.  Alpha is flattened onto black.
+    Anything Pillow can open (PNG, JPEG, GIF, …) works.  Alpha is
+    flattened onto black (RGBA, LA, and every transparency flavor).
+    Packing runs as Pillow point LUTs — tens of milliseconds per full
+    screen, not seconds.
+
+    Requires the ``Pillow`` extra, Pillow >= 9.1.
     """
-    im = image.convert("RGB")
+    from PIL import ImageChops  # lazy — pillow extra only
+
+    im = _flatten_alpha(image).convert("RGB")
     w, h = im.size
-    buf = array("H", [0]) * (w * h)
-    px = im.load()
-    i = 0
-    for y in range(h):
-        for x in range(w):
-            r, g, b = px[x, y]
-            buf[i] = ((r >> 3) << 11) | ((g >> 2) << 5) | (b >> 3)
-            i += 1
-    return buf
+    r, g, b = im.split()
+    hi = ImageChops.add(r.point(_HI_R), g.point(_HI_G))
+    lo = ImageChops.add(g.point(_LO_G), b.point(_LO_B))
+    buf = bytearray(2 * w * h)
+    buf[0::2] = lo.tobytes()  # low byte first: bit 0 = DB0
+    buf[1::2] = hi.tobytes()
+    out = array("H")
+    out.frombytes(buf)
+    if sys.byteorder != "little":
+        out.byteswap()
+    return out
 
 
 def fit_image(image: Image.Image, box_w: int, box_h: int) -> Image.Image:

@@ -3,7 +3,7 @@ from __future__ import annotations
 
 import pytest
 
-from ertftm070.pins import DEFAULT_PINS, Pins
+from ertftm070.pins import DEFAULT_PINS, GPIO_MAX, Pins
 
 
 def test_default_pins_shape():
@@ -22,7 +22,7 @@ def test_default_pins_unique_and_in_range():
         DEFAULT_PINS.backlight,
     ]
     assert len(set(pins)) == len(pins)
-    assert all(0 <= p <= 53 for p in pins)
+    assert all(0 <= p <= GPIO_MAX for p in pins)
 
 
 def test_duplicate_pins_rejected():
@@ -36,8 +36,11 @@ def test_wrong_data_pin_count_rejected():
 
 
 def test_out_of_range_pin_rejected():
-    with pytest.raises(ValueError):
-        Pins(backlight=54)
+    # pins beyond the 40-pin header (0..27) can never be driven:
+    # the BCM2835 bank-0 registers end at 31 and the header at 27
+    for pin in (28, 31, 32, 54):
+        with pytest.raises(ValueError):
+            Pins(backlight=pin)
 
 
 def test_custom_pins_accepted():

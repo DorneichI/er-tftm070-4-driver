@@ -12,7 +12,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-GPIO_MAX = 53  # BCM2835/BCM2711 have 54 GPIOs (0..53)
+GPIO_MAX = 27  # the 40-pin header exposes BCM GPIO 0..27 only
 
 
 @dataclass(frozen=True)
@@ -54,7 +54,9 @@ class Pins:
             raise ValueError("pin numbers must be unique")
         bad = [p for p in pins if not 0 <= p <= GPIO_MAX]
         if bad:
-            raise ValueError(f"GPIO numbers out of range 0..{GPIO_MAX}: {bad}")
+            raise ValueError(
+                f"GPIO numbers out of range 0..{GPIO_MAX} (40-pin header): {bad}"
+            )
 
     @property
     def data(self) -> tuple[int, ...]:
