@@ -7,7 +7,7 @@
 pip install ertftm070
 ```
 
-Open the display in three lines, fill the screen in ~1.5 s, blit Pillow
+Open the display in three lines, fill the screen in ~0.6 s, blit Pillow
 images, read the touch panel later (roadmap). Verified on hardware
 (Pi Zero W, Raspberry Pi OS, September 2026); zero runtime dependencies
 in the core.
@@ -63,7 +63,7 @@ Wire the display as described in [docs/WIRING.md](docs/WIRING.md), then:
 from ertftm070 import Display
 
 with Display() as lcd:                 # opens the bus, inits, backlight on
-    lcd.fill(0xF800)                  # red screen, ~1.5 s
+    lcd.fill(0xF800)                  # red screen, ~0.6 s
 
     lcd.fill_rect(10, 10, 100, 50, 0x07E0)   # partial update
     lcd.image(pil_image, x=20, y=20)         # blit a Pillow image
@@ -144,11 +144,11 @@ package is Pi-specific.
 
 Full-screen fill (800×480×16-bit), measured on a Pi Zero W:
 
-- **~1.5 s** with the C extension (direct `/dev/gpiomem` register writes,
-  no syscalls in the hot loop)
+- **~0.6 s** with the C extension (direct `/dev/gpiomem` register writes,
+  no syscalls in the hot loop, one C call per row)
 - **~10 s** with the pure-Python fallback
 - (For context: RPi.GPIO bit-banging manages ~460 px/s — the C path is
-  ~500× faster, which is why the extension exists.)
+  ~1400× faster, which is why the extension exists.)
 
 `ertftm070.BACKEND` tells you which path is active (`"fast"`/`"slow"`);
 `ERTFTM070_FORCE_SLOW=1` forces the fallback. If a row ever shows a
