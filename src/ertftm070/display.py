@@ -225,27 +225,21 @@ class Display:
         b.pin_write(self.pins.backlight, False)
 
     def _command(self, cmd: int) -> None:
-        b = self._bus_checked()
-        b.pin_write(self.pins.cs, False)
-        b.pin_write(self.pins.dc, False)  # command cycle
-        b.write_byte(cmd)
-        b.pin_write(self.pins.cs, True)
+        """One command cycle: CS low, DC low (command), byte, CS high.
+
+        Framing lives in one place, :func:`backends._framed_command`, so
+        every bus user (init, windows, blits) strokes CS/DC alike and the
+        traffic recorded by the tests' fake bus matches the real ones.
+        """
+        backends._framed_command(self._bus_checked(), cmd)
 
     def _data(self, value: int) -> None:
-        b = self._bus_checked()
-        b.pin_write(self.pins.cs, False)
-        b.pin_write(self.pins.dc, True)  # data cycle
-        b.write_byte(value)
-        b.pin_write(self.pins.cs, True)
+        """One data cycle: CS low, DC high (data), byte, CS high."""
+        backends._framed_data(self._bus_checked(), (value,))
 
     def _data_list(self, values) -> None:
         """Several data bytes with CS held low (used by init sequences)."""
-        b = self._bus_checked()
-        b.pin_write(self.pins.cs, False)
-        b.pin_write(self.pins.dc, True)
-        for value in values:
-            b.write_byte(value)
-        b.pin_write(self.pins.cs, True)
+        backends._framed_data(self._bus_checked(), values)
 
     def reset(self) -> None:
         """Hardware reset: RESET low 100 ms, then high, wait 200 ms."""
@@ -316,14 +310,31 @@ class Display:
         and CS/DC framing in a single backend call (a single C call on
         the fast backend), instead of the ~27 per-row calls that
         dominated small-blit latency.
+
+        ``buf`` must hold exactly ``(x1 - x0 + 1) * (y1 - y0 + 1)``
+        16-bit RGB565 words, row-major in window order: ``array('H')``,
+        a 16-bit memoryview, or bytes/bytearray of word pairs (the
+        pixel buffers the backends accept).  Anything else — wrong
+        length, odd byte count, wider items — raises here, before any
+        register traffic is emitted.
         """
         width = x1 - x0 + 1
-        view = memoryview(buf)
+        row_count = y1 - y0 + 1
+        words = backends._word_view(buf)
+        if isinstance(words, array):
+            words = memoryview(words)  # row slices below are zero-copy
+        if len(words) != width * row_count:
+            raise ValueError(
+                "blit buffer must hold exactly one 16-bit word per pixel "
+                f"of the {width}x{row_count} window "
+                f"({width * row_count} words), got {len(words)}"
+            )
+        # Row slices are the same objects on every pass.
+        rows = [words[row * width : (row + 1) * width] for row in range(row_count)]
         b = self._bus_checked()
         for _pass in range(self._write_passes):
-            for row in range(y1 - y0 + 1):
-                yy = y0 + row
-                b.row_blit(x0, x1, yy, view[row * width : (row + 1) * width])
+            for yy, row in zip(range(y0, y1 + 1), rows):
+                b.row_blit(x0, x1, yy, row)
 
     def _check_bounds(self, x: int, y: int, w: int, h: int) -> None:
         if w <= 0 or h <= 0:

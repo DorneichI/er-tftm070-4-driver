@@ -51,7 +51,8 @@ pip install ertftm070[Pillow]   # + Pillow, for the image API
 ```
 
 `pip` compiles a tiny C extension at install time (the fast pixel path,
-~40× faster than the pure-Python fallback). No compiler on the machine?
+~17× faster than the pure-Python fallback; see the timing table below).
+No compiler on the machine?
 The install still succeeds and the fallback takes over — slower, fully
 functional, with a warning telling you so.
 

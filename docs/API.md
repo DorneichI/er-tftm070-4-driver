@@ -112,4 +112,7 @@ delay entries. Note `0x3A = 0x50` (16 bpp) is applied by `Display`
 `"slow"` (pure-Python `/dev/gpiomem` fallback), chosen at import time.
 Set `ERTFTM070_FORCE_SLOW=1` to force the fallback (also silences the
 missing-extension warning). Advanced users can pass a custom object
-implementing the `ertftm070.backends.Bus` protocol as `Display(backend=…)`.
+implementing the `ertftm070.backends.Bus` protocol as `Display(backend=…)`
+— note that the protocol now includes `row_blit(x0, x1, y, buf)`, which
+every `fill_rect`/`image`/`set_pixel` call uses to write one row
+(window commands + burst + CS/DC framing in one call).

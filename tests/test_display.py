@@ -1,6 +1,8 @@
 """Display logic against the FakeBus — no hardware needed."""
 from __future__ import annotations
 
+from array import array
+
 import pytest
 from PIL import Image
 
@@ -344,6 +346,21 @@ def test_row_blit_honors_write_passes_order(bus):
     display.fill_rect(0, 0, 2, 2, 0x07E0)
     # pass 1 covers all rows before pass 2 repeats them
     assert bus.row_blit_calls == [(0, 1, 0), (0, 1, 1), (0, 1, 0), (0, 1, 1)]
+
+
+def test_blit_rows_sends_each_rows_own_words(display, bus):
+    display.open()
+    # two distinct rows of three words; a bug that repeated, dropped or
+    # mis-sliced a row's words must show up here
+    display._blit_rows(
+        array("H", [0x1111, 0x2222, 0x3333, 0x4444, 0x5555, 0x6666]),
+        x0=0, y0=0, x1=2, y1=1,
+    )
+    assert bus.row_blit_calls == [(0, 2, 0), (0, 2, 1)]
+    assert bus.row_blit_words == [
+        [0x1111, 0x2222, 0x3333],
+        [0x4444, 0x5555, 0x6666],
+    ]
 
 
 def test_write_passes_doubles_the_streams():
