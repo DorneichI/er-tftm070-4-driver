@@ -31,6 +31,9 @@ class Pins:
             everything else)
         reset: master reset (active low)
         backlight: backlight enable (high = on)
+        te: tearing-effect output from the panel (connector pin 8) —
+            an *input* the driver watches for vsync and refresh
+            measurement; wired to GPIO14 (phys 8)
     """
 
     data_low: tuple[int, ...] = (4, 17, 27, 22, 5, 6, 13, 19)
@@ -41,12 +44,13 @@ class Pins:
     rd: int = 16
     reset: int = 12
     backlight: int = 25
+    te: int = 14
 
     def __post_init__(self) -> None:
         pins = (
             list(self.data_low)
             + list(self.data_high)
-            + [self.cs, self.dc, self.wr, self.rd, self.reset, self.backlight]
+            + [self.cs, self.dc, self.wr, self.rd, self.reset, self.backlight, self.te]
         )
         if len(self.data_low) != 8 or len(self.data_high) != 8:
             raise ValueError("the 16-bit bus needs exactly 8 low + 8 high data pins")

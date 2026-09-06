@@ -26,6 +26,7 @@ class FakeBus:
         self.row_blit_calls = []  # (x0, x1, y) per row_blit call
         self.row_blit_words = []  # the word list per row_blit call
         self.read_words = []  # script queue
+        self.pin_read_script = []  # scripted pin_read results (popped)
 
     # -- Bus protocol --
     def open(self):
@@ -39,6 +40,13 @@ class FakeBus:
 
     def pin_write(self, pin, level):
         self.pin_levels[pin] = bool(level)
+
+    def pin_read(self, pin):
+        # Tests script input-pin levels (TE, touch INT) via pin_levels,
+        # or per-call sequences via pin_read_script (popped).
+        if self.pin_read_script:
+            return bool(self.pin_read_script.pop(0))
+        return bool(self.pin_levels.get(pin, False))
 
     def write_byte(self, value):
         self.bytes_written.append((self.pin_levels.get(self.pins.dc), value))

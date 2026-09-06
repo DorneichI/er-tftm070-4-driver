@@ -159,6 +159,11 @@ static void pin_write_raw(int pin, int level)
     gpio[level ? GPSET0 : GPCLR0] = 1u << pin;
 }
 
+static int pin_read_raw(int pin)
+{
+    return (gpio[GPLEV0] >> pin) & 1u;
+}
+
 /* One register byte on DB0-7 with a WR strobe. */
 static void bus_write_byte(uint8_t value)
 {
@@ -314,6 +319,20 @@ static PyObject *py_pin_write(PyObject *self, PyObject *args)
     }
     pin_write_raw(pin, level);
     Py_RETURN_NONE;
+}
+
+static PyObject *py_pin_read(PyObject *self, PyObject *args)
+{
+    int pin;
+    if (!PyArg_ParseTuple(args, "i:pin_read", &pin))
+        return NULL;
+    if (check_open() < 0)
+        return NULL;
+    if (pin < 0 || pin >= GPIO_MAX) {
+        PyErr_SetString(PyExc_ValueError, "pin out of range 0..31 (bank-0 GPIO)");
+        return NULL;
+    }
+    return PyBool_FromLong(pin_read_raw(pin));
 }
 
 static PyObject *py_write_byte(PyObject *self, PyObject *args)
@@ -508,6 +527,8 @@ static PyMethodDef methods[] = {
      "pin_mode(pin, output) — set a pin to output (1) or input (0)."},
     {"pin_write", py_pin_write, METH_VARARGS,
      "pin_write(pin, level) — drive a pin high (1) or low (0)."},
+    {"pin_read", py_pin_read, METH_VARARGS,
+     "pin_read(pin) — sample a pin's level (GPLEV0); True = high."},
     {"write_byte", py_write_byte, METH_VARARGS,
      "write_byte(value) — one register byte on DB0-7 with a WR strobe."},
     {"read_word", py_read_word, METH_NOARGS,

@@ -20,6 +20,7 @@ def test_default_pins_unique_and_in_range():
         DEFAULT_PINS.rd,
         DEFAULT_PINS.reset,
         DEFAULT_PINS.backlight,
+        DEFAULT_PINS.te,
     ]
     assert len(set(pins)) == len(pins)
     assert all(0 <= p <= GPIO_MAX for p in pins)
@@ -47,7 +48,7 @@ def test_custom_pins_accepted():
     p = Pins(
         data_low=(0, 1, 2, 3, 4, 5, 6, 7),
         data_high=(8, 9, 10, 11, 12, 13, 14, 15),
-        cs=16, dc=17, wr=18, rd=19, reset=20, backlight=21,
+        cs=16, dc=17, wr=18, rd=19, reset=20, backlight=21, te=22,
     )
     assert p.cs == 16
     assert p.data[15] == 15

@@ -15,10 +15,11 @@ PIXELS = [0x0000, 0xF800, 0x07E0, 0x001F, 0xFFFF, 0xFFE0, 0x07FF, 0xF81F]
 
 def test_open_configures_pins_and_inits(display, bus):
     display.open()
-    # all 22 pins configured as outputs
+    # 22 pins configured as outputs, TE as the sole input
     pins = list(bus.pin_modes)
-    assert len(pins) == 22
-    assert all(bus.pin_modes[p] is True for p in pins)
+    assert len(pins) == 23
+    assert bus.pin_modes[bus.pins.te] is False
+    assert all(bus.pin_modes[p] is True for p in pins if p != bus.pins.te)
     # idle states: control lines high, data and backlight low
     for p in (bus.pins.cs, bus.pins.dc, bus.pins.wr, bus.pins.rd, bus.pins.reset):
         assert bus.pin_levels[p] is True
@@ -38,6 +39,9 @@ def test_init_writes_f0_and_post_init_3a(display, bus):
     # 0x3A=0x50 comes after 0x29 (display on), at the very end of the table
     assert stream.index((False, 0x29)) < stream.index((False, 0x3A))
     assert stream[stream.index((False, 0x3A)) + 1] == (True, 0x50)
+    # 0x35=0x00 (tearing effect on, V-blanking) follows, driver-level
+    assert stream.index((False, 0x3A)) < stream.index((False, 0x35))
+    assert stream[stream.index((False, 0x35)) + 1] == (True, 0x00)
 
 
 def test_fill_rect_window_and_stream(display, bus):

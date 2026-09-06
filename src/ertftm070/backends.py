@@ -132,6 +132,13 @@ class Bus(Protocol):
     def pin_write(self, pin: int, level: bool) -> None:
         """Drive a pin high (True) or low (False)."""
 
+    def pin_read(self, pin: int) -> bool:
+        """Sample a pin's current level (GPLEV0).  True = high.
+
+        Used for the SSD1963's TE (tearing effect) output and the touch
+        controller's INT line — inputs the host only watches.
+        """
+
     def write_byte(self, value: int) -> None:
         """One register byte on DB0-7 with a WR strobe."""
 
@@ -298,6 +305,9 @@ class _FastioBus:
     def pin_write(self, pin: int, level: bool) -> None:
         self._mod().pin_write(pin, bool(level))
 
+    def pin_read(self, pin: int) -> bool:
+        return bool(self._mod().pin_read(pin))
+
     def write_byte(self, value: int) -> None:
         self._mod().write_byte(value)
 
@@ -389,6 +399,9 @@ class _MmioBus:
     def pin_write(self, pin: int, level: bool) -> None:
         self._check()
         self._write_word(_GPSET0 if level else _GPCLR0, 1 << pin)
+
+    def pin_read(self, pin: int) -> bool:
+        return bool(self._read_word_reg(_GPLEV0) & (1 << pin))
 
     def write_byte(self, value: int) -> None:
         mm = self._check()

@@ -121,3 +121,27 @@ def test_run_accepts_flags_after_subcommand(bus):
     display.open()
     assert run(_args(["fill", "F800", "--once"]), display=display) == 0
     assert all(set(s) == {0xF800} for s in bus.streams)
+
+
+def test_refresh_prints_clocks_and_crystal(bus, capsys, monkeypatch):
+    import ertftm070.display as display_module
+    from tests.test_touch import _FakeClock
+
+    display = _fake_display(bus)
+    display.open()
+    bus.pin_read_script = [False, True] * 6  # 5 default samples
+    monkeypatch.setattr(display_module.time, "sleep", lambda s: None)
+    monkeypatch.setattr(display_module.time, "monotonic", _FakeClock())
+    assert run(_args(["refresh"]), display=display) == 0
+    out = capsys.readouterr().out
+    assert "9773 kHz" in out  # 20 Hz x 929 x 526
+    assert "20.0 Hz" in out
+    assert "crystal:" in out
+
+
+def test_touch_test_without_i2c_reports_and_exits(bus, capsys):
+    display = _fake_display(bus)
+    display.open()
+    # no /dev/i2c-1 on this machine: Touch.open raises I2CError -> exit 1
+    assert run(_args(["touch-test"]), display=display) == 1
+    assert "touch unavailable" in capsys.readouterr().err
