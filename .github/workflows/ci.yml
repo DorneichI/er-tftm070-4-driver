@@ -28,13 +28,14 @@ jobs:
     runs-on: ubuntu-latest
     needs: test
     env:
-      # The shipped wheel must stay pure (py3-none-any): with the C
-      # extension compiled it becomes platform-tagged linux_x86_64, which
-      # PyPI rejects.  The extension is optional, so a broken compiler
-      # skips it (same path the no-compiler job exercises); the sdist
-      # keeps the C source, and `pip install ertftm070 --no-binary
-      # ertftm070` builds the fast path on the target.
-      CC: /bin/false
+      # The shipped wheel must stay pure (py3-none-any).  Declaring the
+      # C extension at all makes bdist_wheel platform-tag the wheel
+      # (linux_x86_64) even when the compile is skipped — PyPI rejects
+      # that tag.  setup.py honors ERTFTM070_NO_FASTIO by declaring no
+      # extension; the sdist keeps the C source, and
+      # `pip install ertftm070 --no-binary ertftm070` builds the fast
+      # path on the target.
+      ERTFTM070_NO_FASTIO: "1"
     steps:
       - uses: actions/checkout@v7
         with:

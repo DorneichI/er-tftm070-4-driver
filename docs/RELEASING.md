@@ -34,10 +34,11 @@ workflow is authorized directly.
    sdist + wheel to PyPI via the trusted publisher. Watch the
    Actions run; the `release` environment gates the publish step.
 
-   The published wheel is pure Python (`py3-none-any`) — the optional
-   C accelerator is deliberately not compiled into it (a compiled wheel
-   would be platform-tagged and PyPI would reject it).  For the fast
-   path on a Pi, install from the sdist:
+   The published wheel is pure Python (`py3-none-any`) — the release
+   build declares no C extension (`ERTFTM070_NO_FASTIO=1` in the build
+   job), because even an unbuilt-but-declared extension makes
+   `bdist_wheel` platform-tag the wheel and PyPI rejects that tag.
+   For the fast path on a Pi, install from the sdist:
    `pip install ertftm070 --no-binary ertftm070` (falls back to the
    pure-Python backend if no compiler is available).
 
