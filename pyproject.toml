@@ -47,14 +47,12 @@ package-dir = { "" = "src" }
 [tool.setuptools.packages.find]
 where = ["src"]
 
-# The C extension makes pixel writes ~1400x faster than Python bit-banging,
-# but it is OPTIONAL: if no compiler is available (or the build fails for any
-# reason), pip install still succeeds and the pure-Python /dev/gpiomem
-# backend takes over automatically (with a warning at import time).
-[[tool.setuptools.ext-modules]]
-name = "ertftm070._fastio"
-sources = ["src/ertftm070/_fastio.c"]
-optional = true
+# The optional C extension is declared in setup.py (not here): it makes
+# pixel writes ~1400x faster than Python bit-banging, but pip install
+# succeeds without a compiler and the pure-Python /dev/gpiomem backend
+# takes over automatically.  setup.py also gates the declaration behind
+# ERTFTM070_NO_FASTIO=1 so the release wheel stays pure (py3-none-any) —
+# a declared extension platform-tags the wheel even when not built.
 
 [tool.setuptools_scm]
 fallback_version = "0.1.0"
