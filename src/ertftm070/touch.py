@@ -181,6 +181,22 @@ def _touch_sane(i2c: I2C) -> bool:
     return _records_sane(records, count)
 
 
+def _default_i2c(bus: Bus):
+    """The I2C transport for ``bus``: the simulated FT5x06 register file
+    when the display runs on :class:`ertftm070.simulator.SimulatedBus`
+    (``ERTFTM070_DISPLAY=sim``), else the real ``/dev/i2c-1`` device.
+
+    Keyed off the bus, not the environment: a backend injected with
+    ``Display(backend=...)`` keeps real-I2C semantics, and an explicit
+    ``i2c=`` passed to :class:`Touch` wins over both.
+    """
+    from .simulator import SimulatedBus, SimulatedI2C
+
+    if isinstance(bus, SimulatedBus):
+        return SimulatedI2C(FT5X06_ADDR, state=bus.touch)
+    return I2C(FT5X06_ADDR)
+
+
 def _rst_pulse(bus: Bus, pin: int) -> None:
     """Drive one /RST pulse: high, low ≥5 ms (Trst), then ≥300 ms of
     settle time (Trsi) before the chip's first report.  Shared by
@@ -288,7 +304,9 @@ class Touch:
         calibration: Raw→logical mapping (default: the measured
             panel-native 0..799 × 0..479 span).
         i2c: Injectable I2C transport for tests; the default opens
-            ``/dev/i2c-1`` at 0x38.
+            ``/dev/i2c-1`` at 0x38 — or, when ``bus`` is the simulated
+            backend (``ERTFTM070_DISPLAY=sim``), the simulated register
+            file that browser touches feed.
 
     Lifecycle: close the touch before its Display — the context
     manager pair ``with Display() as lcd, Touch(lcd.bus) as touch:``
@@ -307,7 +325,7 @@ class Touch:
         self._bus = bus
         self.touch_pins = touch_pins
         self.calibration = calibration
-        self._i2c = i2c or I2C(FT5X06_ADDR)
+        self._i2c = i2c or _default_i2c(bus)
         self._opened = False
         self._validate_pin_layout(bus)
 

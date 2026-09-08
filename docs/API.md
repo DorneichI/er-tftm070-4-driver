@@ -217,11 +217,55 @@ delay entries. Note `0x3A = 0x50` (16 bpp) is applied by `Display`
 
 ## Backends
 
-`ertftm070.BACKEND` is `"fast"` (compiled `_fastio` C extension) or
-`"slow"` (pure-Python `/dev/gpiomem` fallback), chosen at import time.
-Set `ERTFTM070_FORCE_SLOW=1` to force the fallback (also silences the
-missing-extension warning). Advanced users can pass a custom object
-implementing the `ertftm070.backends.Bus` protocol as `Display(backend=…)`
-— note that the protocol now includes `row_blit(x0, x1, y, buf)`, which
-every `fill_rect`/`image`/`set_pixel` call uses to write one row
-(window commands + burst + CS/DC framing in one call).
+`ertftm070.BACKEND` is `"fast"` (compiled `_fastio` C extension),
+`"slow"` (pure-Python `/dev/gpiomem` fallback) or `"sim"` (the browser
+simulator), chosen at import time — set env vars before starting
+Python. Set `ERTFTM070_FORCE_SLOW=1` to force the fallback (also
+silences the missing-extension warning). Advanced users can pass a
+custom object implementing the `ertftm070.backends.Bus` protocol as
+`Display(backend=…)` — note that the protocol now includes
+`row_blit(x0, x1, y, buf)`, which every `fill_rect`/`image`/`set_pixel`
+call uses to write one row (window commands + burst + CS/DC framing in
+one call).
+
+## Simulator (browser backend)
+
+`ERTFTM070_DISPLAY=sim` makes `Display()` and `Touch` pick simulated
+components automatically — no code changes in the app:
+
+```bash
+pip install 'ertftm070[sim]'             # the websockets extra
+ERTFTM070_DISPLAY=sim python3 examples/touch_paint.py
+# → open http://localhost:8000/ and draw with the mouse
+```
+
+**Behavior contract.** `SimulatedBus` keeps an 800×480 panel-native
+framebuffer (controller space, so `rotation` works exactly as on
+hardware) and streams one binary row message per `row_blit` call to
+every connected browser — the same row-by-row update behavior the panel
+shows. Each connect first receives a full-frame snapshot. Register and
+pin writes are no-ops; `pin_read(TE)` answers an emulated ~53.7 Hz
+blanking waveform so `vsync=`, `vsync_wait()` and `refresh_rate()`
+behave (and measure plausible clocks), and pins set to *input* answer
+the touch INT line — idle low, high while any finger is down — so
+`wait_touch()` works with any `TouchPins` wiring. `read_word()` returns
+0: register read-back is not simulated, so `selftest()`/`gramcheck()`
+report failure.
+
+**Touch.** Browser mouse = one touch; Touch Events (phones/tablets) =
+multi-touch, up to the FT5x06's five points (ids 0–4). The server
+encodes the shared touch state into real FT5x06 registers, served by
+`SimulatedI2C` through the same interface `Touch` drives on hardware —
+`read()`, `read(mapped=True)`, `wait_touch()`, `reset()` all work.
+
+**Server.** Binds `0.0.0.0:8000` by default (override:
+`ERTFTM070_SIM_HOST` / `ERTFTM070_SIM_PORT`), so a sim running on the
+Pi is viewable from any browser on the LAN. Port conflicts and a
+missing `websockets` package raise `Ertftm070Error` with a clear
+message — never `NotOnRaspberryPi`.
+
+**Selection.** The env var is read once at import (like `BACKEND`
+itself); an explicit `Display(backend=…)` always wins. `Touch` keys its
+default transport off the *bus*, not the env var, so an injected
+backend keeps real-I2C semantics; an explicit `i2c=` wins over both.
+Headless use (framebuffer only, no server): `SimulatedBus(serve=False)`.

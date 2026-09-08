@@ -30,7 +30,13 @@ classifiers = [
 # for Display.image(); the core has zero runtime deps.  The floor is 9.1:
 # Image.Transpose (used by rotate_image) landed in 9.1.0.
 Pillow = ["Pillow>=9.1"]
-dev = ["pytest>=7", "ruff>=0.6", "Pillow>=9.1", "build"]
+# The `sim` extra runs the browser simulator (ERTFTM070_DISPLAY=sim); the
+# package imports it lazily, so core installs stay dependency-free.
+# websockets >= 14 is the first release where the new asyncio server API
+# (the one simulator.py uses) is the documented default; it supports
+# Python 3.9, and pip resolves newer releases per interpreter.
+sim = ["websockets>=14"]
+dev = ["pytest>=7", "ruff>=0.6", "Pillow>=9.1", "build", "websockets>=14"]
 
 [project.scripts]
 ertftm070 = "ertftm070.__main__:main"
@@ -46,6 +52,11 @@ package-dir = { "" = "src" }
 
 [tool.setuptools.packages.find]
 where = ["src"]
+
+# The simulator's browser page ships inside the wheel (and, via
+# MANIFEST.in, the sdist) so ERTFTM070_DISPLAY=sim works from any install.
+[tool.setuptools.package-data]
+ertftm070 = ["sim.html"]
 
 # The optional C extension is declared in setup.py (not here): it makes
 # pixel writes ~1400x faster than Python bit-banging, but pip install

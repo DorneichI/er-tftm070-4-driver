@@ -4,6 +4,57 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+
+- Simulated display backend (`ertftm070.simulator`): set
+  `ERTFTM070_DISPLAY=sim` (read once at import, like the existing backend
+  choice) and `Display()`/`Touch` pick simulated components below the
+  interfaces they already speak — dashboard and example code runs
+  **unchanged** on a laptop with no Pi and no panel.
+  - `SimulatedBus` implements the `Bus` protocol: `row_blit` copies the
+    RGB565 words into an in-memory 800×480 framebuffer and streams each
+    row to connected browsers over WebSocket (one message per call,
+    raw little-endian RGB565 — the browser decodes, no encoding on the
+    hot path). Register/pin writes are no-ops; pin levels are tracked so
+    the touch INT line (idle low, high while touching) and the emulated
+    TE waveform (~53.7 Hz, the measured panel refresh) read like the
+    real panel's — `vsync=`, `vsync_wait()`, `refresh_rate()` and
+    `wait_touch()` behave, and `ertftm070 refresh` reports the same
+    clocks as hardware (53.8 Hz / 26.3 MHz → 10 MHz crystal). Rows are
+    paced at the panel's ~1.3 ms per burst, so a continuously redrawing
+    app drives the sim at hardware rates instead of flooding it.
+  - Browser page served at `http://<host>:8000/` (binds `0.0.0.0`, so a
+    sim running on the Pi is viewable from the Mac — override with
+    `ERTFTM070_SIM_HOST`/`ERTFTM070_SIM_PORT`): 800×480 canvas scaled to
+    fit the window, mouse as one touch, phone/tablet Touch Events as
+    multi-touch (up to the FT5x06's five points, ids 0..4), auto-
+    reconnect (every connect receives a full-frame snapshot, then rows).
+  - `SimulatedI2C` serves the FT5x06 register file (TD_STATUS + point
+    records) from the shared touch state, so `Touch` drives it unchanged;
+    the framebuffer part is fully testable headless
+    (`SimulatedBus(serve=False)` starts no server).
+  - New optional `[sim]` extra (`websockets>=14`, imported lazily — core
+    installs stay dependency-free). An explicit `Display(backend=…)`
+    still wins over the env var, and `Touch` keys its transport off the
+    bus, not the environment, so injected backends keep real-I2C
+    semantics.
+- `tests/test_simulator.py` — 25 tests: headless framebuffer/validation/
+  pin/TE coverage, touch-state ↔ register round-trips, `Touch`
+  end-to-end over the simulated register file, env selection, and
+  WebSocket server smoke tests (page, protocol, touch injection, port
+  conflicts, missing-package diagnostics). CI's `dev` extra gained
+  `websockets` so the server tests run in the matrix.
+
+### Changed
+
+- `ertftm070.BACKEND` may now be `"sim"`; `backends.get_backend()`
+  returns a `SimulatedBus` when `ERTFTM070_DISPLAY=sim`. `selftest`/
+  `gramcheck` report failure in sim (register read-back is not
+  simulated); `lcd.sleep()` runs the command sequence but the picture
+  does not go dark.
+
 ## [0.1.0] — 2026-09-06
 
 ### Added
