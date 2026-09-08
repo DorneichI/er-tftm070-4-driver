@@ -52,12 +52,20 @@ from collections import deque
 from http import HTTPStatus
 from pathlib import Path
 from typing import Any
+from urllib.parse import urlsplit
 
 from ._i2c import I2CError
 from .backends import _word_view
 from .errors import Ertftm070Error
 from .pins import DEFAULT_PINS, Pins
-from .touch import EVENT_CONTACT, EVENT_DOWN, FT5X06_ADDR, TD_STATUS
+from .touch import (
+    _POINT_BASES,
+    EVENT_CONTACT,
+    EVENT_DOWN,
+    EVENT_UP,
+    FT5X06_ADDR,
+    TD_STATUS,
+)
 
 log = logging.getLogger("ertftm070")
 
@@ -83,10 +91,11 @@ TE_BLANK_FRACTION = 0.08
 # flooding the server with microseconds of memcpys.
 _ROW_TIME = 0.0013
 
-# The first point-record register — touch.py's _POINT_BASES[0].  The
-# round-trip test in tests/test_simulator.py pins this against
-# touch.decode_points, so the layouts cannot drift apart.
-_POINT_BASE = 0x03
+# The first point-record register.  Bound straight to touch.py's table
+# so the register map cannot drift apart from decode_points (the
+# round-trip test in tests/test_simulator.py additionally pins the
+# layout against it).
+_POINT_BASE = _POINT_BASES[0]
 
 _MAX_FINGERS = 5
 
@@ -102,14 +111,32 @@ class TouchState:
     real chip produces and :func:`ertftm070.touch.decode_points` keeps.
     Releases are never encoded; an ``up`` event removes the finger from
     TD_STATUS entirely, exactly like the chip's count does.
+
+    When more than one browser is connected, each viewer owns the finger
+    ids it pressed (the ``owner`` argument of :meth:`update`): only the
+    owner may lift or move a finger it holds, and :meth:`release_owner`
+    drops a departed viewer's fingers wholesale.  Without ownership a
+    viewer that vanishes mid-press (tab closed, network drop — no ``up``
+    ever arrives) would leave its finger stuck down forever, and two
+    viewers would yank each other's fingers around the shared
+    five-id register map.
     """
 
     def __init__(self) -> None:
         self._lock = threading.Lock()
         self._points = {}  # finger id -> (x, y, event)
+        self._owners = {}  # finger id -> owner token of the current press
 
-    def update(self, ft_id: int, x: int, y: int, event: str) -> None:
-        """Apply one browser touch event (``"down"``/``"move"``/``"up"``).
+    def update(self, ft_id: int, x: int, y: int, event: str, owner=None) -> None:
+        """Apply one touch event (``"down"``/``"move"``/``"up"``).
+
+        ``owner`` identifies the viewer that produced the event.  A
+        finger id a different owner currently holds is left alone (the
+        FT5x06's five-point register map cannot hold two viewers' points
+        under one id), and only the owning viewer's ``up`` releases a
+        press.  ``owner=None`` — headless feeders sharing a served
+        bus — is just another non-owner: it cannot take over or lift a
+        finger a browser holds, only claim ids no one holds.
 
         Coordinates clamp to the panel span so the touch driver's
         full-scale "unpressed marker" filter (``_JUNK_COORD``) can never
@@ -121,8 +148,12 @@ class TouchState:
         x = min(max(x, 0), WIDTH - 1)
         y = min(max(y, 0), HEIGHT - 1)
         with self._lock:
+            holder = self._owners.get(ft_id)
+            if holder is not None and holder != owner:
+                return  # another viewer holds this finger id
             if event == "up":
                 self._points.pop(ft_id, None)
+                self._owners.pop(ft_id, None)
                 return
             if ft_id not in self._points and len(self._points) >= _MAX_FINGERS:
                 return
@@ -133,6 +164,15 @@ class TouchState:
                 y,
                 EVENT_CONTACT if event == "move" and seen is not None else EVENT_DOWN,
             )
+            self._owners[ft_id] = owner
+
+    def release_owner(self, owner) -> None:
+        """Lift every finger a viewer pressed (its connection ended)."""
+        with self._lock:
+            dead = [ft_id for ft_id, o in self._owners.items() if o is owner]
+            for ft_id in dead:
+                self._points.pop(ft_id, None)
+                self._owners.pop(ft_id, None)
 
     def sample(self) -> tuple[int, bytes, bool]:
         """``(count, records, any_down)`` — the TD_STATUS byte, the raw
@@ -238,6 +278,12 @@ class SimulatedBus:
                 self.host,
                 self.server_port,
             )
+            if self.host not in ("localhost", "127.0.0.1", "::1"):
+                log.warning(
+                    "simulator: serving on %s — anyone who can reach this "
+                    "host can view the simulated display",
+                    self.host,
+                )
         else:
             log.info("simulated display ready (800x480, backend=sim, server off)")
 
@@ -332,11 +378,13 @@ class SimulatedBus:
                 f"{WIDTH}x{HEIGHT} panel"
             )
         row_bytes = _row_le_bytes(view)
-        payload = ROW_HEADER.pack(ROW_MSG, x0, x1, y, len(view)) + row_bytes
         with self._lock:
             offset = (y * WIDTH + x0) * 2
             self._fb[offset : offset + len(row_bytes)] = row_bytes
         if self._server is not None:
+            # The wire payload is only needed when browsers are being
+            # fed — a headless ``serve=False`` sim never pays the pack.
+            payload = ROW_HEADER.pack(ROW_MSG, x0, x1, y, len(view)) + row_bytes
             self._server.push_row(payload)
         time.sleep(_ROW_TIME)  # the panel's ~1.3 ms row burst
 
@@ -344,8 +392,13 @@ class SimulatedBus:
 
     def pixel(self, x: int, y: int) -> int:
         """The RGB565 word currently at panel coordinate (x, y)."""
-        offset = (y * WIDTH + x) * 2
-        return self._fb[offset] | (self._fb[offset + 1] << 8)
+        if not 0 <= x < WIDTH or not 0 <= y < HEIGHT:
+            raise ValueError(
+                f"pixel: ({x}, {y}) outside the {WIDTH}x{HEIGHT} panel"
+            )
+        with self._lock:
+            offset = (y * WIDTH + x) * 2
+            return self._fb[offset] | (self._fb[offset + 1] << 8)
 
     def full_frame(self) -> bytes:
         """A consistent snapshot of the framebuffer (for browser connects)."""
@@ -395,7 +448,19 @@ class SimulatedI2C:
             return bytes([self._state.sample()[0]])
         if reg == _POINT_BASE:
             records = self._state.sample()[1]
-            return (records + b"\x00" * n)[:n]  # pad a short claim
+            if len(records) < n:
+                # The reader may already have applied an ``up`` between
+                # this status read and this records read.  Serve the
+                # shrunken claim as release-marked records — a real chip
+                # holds EVENT_UP bytes in the slot for one frame — never
+                # zero bytes, which would decode as a ghost press at
+                # (0,0).  Padding is a whole number of 6-byte records
+                # (n == count * 6, count <= 5).
+                release = bytes(
+                    [EVENT_UP << 6, 0, 0, 0, 0, 0]  # (0,0) up; id 0
+                )
+                records += release * ((n - len(records) + 5) // 6)
+            return records[:n]
         log.debug("sim: i2c read of unmodeled reg 0x%02X -> zeros", reg)
         return b"\x00" * n
 
@@ -516,6 +581,7 @@ class SimServer:
             except BaseException as exc:  # bind failure etc.: surface on app thread
                 outcome["error"] = exc
                 ready.set()
+                loop.close()  # nothing bound: no transports to lose
                 return
             self._server = server
             self._port = server.sockets[0].getsockname()[1]
@@ -527,7 +593,25 @@ class SimServer:
         self._thread = threading.Thread(target=_run, name="ertftm070-sim", daemon=True)
         self._thread.start()
         if not ready.wait(timeout=10):
-            raise Ertftm070Error("simulator: server did not start")
+            # The bind never completed (a hostname whose DNS lookup
+            # hangs, a firewall that drops the listen socket).  Stop the
+            # server thread before reporting — otherwise it stays alive
+            # and eventually binds, and the *next* open() then fails
+            # with a self-inflicted port conflict against the leaked
+            # thread that no retry can clear.  run_until_complete
+            # unwinds (the loop stopped before the bind completed), and
+            # the error branch inside _run closes the loop.
+            loop = self._loop
+            if loop is not None:
+                try:
+                    loop.call_soon_threadsafe(loop.stop)
+                except RuntimeError:
+                    pass
+            self._thread.join(timeout=1.0)
+            self._loop = self._thread = None
+            raise Ertftm070Error(
+                "simulator: server did not start within 10 s"
+            )
         if "error" in outcome:
             self._loop = None
             self._thread = None
@@ -543,16 +627,27 @@ class SimServer:
             return
 
         async def _shutdown() -> None:
-            # Close connections first (bounded — a stuck client must not
-            # hold up the app thread's close()), then wake the handlers
-            # parked on wake.wait() with the shutdown sentinel so they
-            # exit instead of being destroyed mid-task, then close the
-            # server.
-            for connection in list(self._conns):
-                try:
-                    await asyncio.wait_for(connection.close(), timeout=0.5)
-                except Exception:
-                    pass
+            # Abort in-flight sends first — a client that stopped
+            # reading must not stall the close handshake — then wake the
+            # handlers parked on wake.wait() with the shutdown sentinel
+            # so they exit instead of being destroyed mid-task, then
+            # close the server.  All the per-connection waits run
+            # concurrently (each capped individually), so any number of
+            # stuck connections cost one bounded budget, not one budget
+            # per connection, and the whole close stays well inside the
+            # app thread's 2 s deadline below.  The shutdown sentinel
+            # also covers the handlers the reader-side sentinel
+            # (see _reader) already woke.
+            close_tasks = [
+                asyncio.create_task(
+                    asyncio.wait_for(connection.close(), timeout=0.5)
+                )
+                for connection in list(self._conns)
+            ]
+            if close_tasks:
+                _, pending = await asyncio.wait(close_tasks, timeout=1.5)
+                for task in pending:
+                    task.cancel()  # client never answered: drop the close
             for state in self._conns.values():
                 state.push(None)
             server = self._server
@@ -566,6 +661,9 @@ class SimServer:
                     pass
 
         try:
+            # A stalled client, a wedged loop or a fresh bind failure all
+            # land here — never on the app thread, which keeps its close
+            # budget no matter how many connections are stuck.
             asyncio.run_coroutine_threadsafe(_shutdown(), loop).result(timeout=2.0)
         except Exception:
             pass  # best-effort: the thread is a daemon, never a process blocker
@@ -580,7 +678,10 @@ class SimServer:
         loop = self._loop
         if loop is None or not loop.is_running():
             return
-        loop.call_soon_threadsafe(self._feed, payload)
+        try:
+            loop.call_soon_threadsafe(self._feed, payload)
+        except RuntimeError:
+            pass  # the loop shut down between the check and the call
 
     # -- loop thread --
 
@@ -597,6 +698,8 @@ class SimServer:
         return server
 
     def _feed(self, payload: bytes) -> None:
+        if not self._conns:
+            return
         for state in self._conns.values():
             state.push(payload)
 
@@ -630,6 +733,27 @@ class SimServer:
                 pass
 
     async def _reader(self, connection) -> None:
+        """Consume one connection's touch messages into the shared state.
+
+        Runs until the connection ends for any reason.  A poisoned
+        message (``x: 1e309`` overflows ``int()`` — an ``OverflowError``
+        that the per-message ``ValueError`` guard would not catch) must
+        not kill the read loop and leave a live but deaf connection, so
+        it is caught here too.
+
+        The ``finally`` releases the connection's side of the shutdown
+        protocol:
+
+        * the fingers this viewer pressed are lifted — the viewer is
+          gone, so no ``up`` for them will ever arrive, and without this
+          a browser tab closed mid-press would leave its touches stuck
+          down forever on the shared state (and would keep blocking the
+          id it pressed against other viewers);
+        * the handler is woken with the shutdown sentinel, so a peer
+          that disconnected while the handler was parked on
+          ``wake.wait()`` does not leave a zombie handler holding the
+          connection's slot and its queued rows forever.
+        """
         try:
             async for message in connection:
                 if not isinstance(message, str):
@@ -639,6 +763,12 @@ class SimServer:
                 except ValueError:
                     log.debug("simulator: ignoring malformed client message")
                     continue
+                if not isinstance(data, dict):
+                    # Any other JSON shape ([1,2,3], null, "text", 5) has
+                    # no .get — without this check one stray message
+                    # would AttributeError past the per-message guards
+                    # and end the whole read loop.
+                    continue
                 if data.get("type") != "touch":
                     continue
                 event = data.get("event")
@@ -647,15 +777,45 @@ class SimServer:
                 try:
                     x, y = int(data["x"]), int(data["y"])
                     ft_id = int(data.get("id", 0))
-                except (KeyError, TypeError, ValueError):
+                except (KeyError, TypeError, ValueError, OverflowError):
+                    # NaN / overflowing json numbers ("1e309") raise
+                    # OverflowError from int(); skip just this message.
                     continue
-                self._bus.touch.update(ft_id, x, y, event)
+                self._bus.touch.update(ft_id, x, y, event, owner=connection)
         except Exception:
             pass  # ConnectionClosed and friends end the reader
+        finally:
+            self._bus.touch.release_owner(connection)
+            state = self._conns.get(connection)
+            if state is not None:
+                state.push(None)  # shutdown sentinel: wake the handler
 
     async def _process_request(self, connection, request):
-        """Serve the page at plain GET /; everything else (the /ws
-        upgrade) proceeds with the WebSocket handshake."""
+        """Same-origin policy, then serve the page at plain GET /;
+        everything else (the /ws upgrade) proceeds with the WebSocket
+        handshake.
+
+        The server hands every connection the full framebuffer and
+        accepts touches, so it must refuse requests a browser would only
+        send cross-origin: a malicious page open on the operator's
+        machine (or anywhere on the LAN) could otherwise reach a sim
+        bound to 0.0.0.0, read the whole display and inject touches with
+        no interaction at all.  Browsers attach an ``Origin`` header to
+        WebSocket upgrades (never to a plain top-level page load), and
+        the served page talks to ``ws://<same host>`` — so an Origin
+        whose host:port matches the request's ``Host`` header is exactly
+        the intended client.  Requests without an Origin header (raw
+        non-browser clients, tests) are admitted.  ``None`` lets the
+        handshake proceed; a ``respond`` return completes the HTTP
+        exchange and drops the connection."""
+        origin = request.headers.get("Origin")
+        if origin is not None:
+            host = request.headers.get("Host")
+            if host is None or urlsplit(origin).netloc.lower() != host.lower():
+                log.warning("simulator: refusing cross-origin %s", origin)
+                return connection.respond(
+                    HTTPStatus.FORBIDDEN, "cross-origin request refused"
+                )
         if request.path == "/":
             response = connection.respond(HTTPStatus.OK, self._page)
             response.headers["Content-Type"] = "text/html; charset=utf-8"

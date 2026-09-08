@@ -44,7 +44,6 @@ const coords = document.getElementById("coords");
 // browsers, which offsets every row by its own origin.  Rows are full
 // 800x1 strips copied from the framebuffer buffer, so the simple form
 // repaints exactly one row per message.
-const fullImg = ctx.createImageData(W, H);
 const rowImg = ctx.createImageData(W, 1);
 
 function fit() {
@@ -87,7 +86,6 @@ function decodeRow(dv, off, x0, x1, y) {
     img.data[o++] = (b << 3) | (b >> 2); // B 5 -> 8 bits
     img.data[o++] = 255;
   }
-  paintRow(y);
 }
 
 function paintRow(y) {
@@ -100,14 +98,14 @@ function onMessage(e) {
   if (dv.getUint8(0) === 0x02) { // FULL frame
     if (e.data.byteLength !== 1 + W * H * 2) { ws.close(); return; }
     for (let y = 0; y < H; y++) decodeRow(dv, 1 + y * W * 2, 0, W - 1, y);
-    fullImg.data.set(img.data);
-    ctx.putImageData(fullImg, 0, 0); // simple form: one full repaint
+    ctx.putImageData(img, 0, 0); // simple form: one repaint for the whole frame
   } else if (dv.getUint8(0) === 0x01) { // ROW
     if (e.data.byteLength < 9) { ws.close(); return; }
     const x0 = dv.getUint16(1, true), x1 = dv.getUint16(3, true);
     const y = dv.getUint16(5, true), n = dv.getUint16(7, true);
     if (n !== x1 - x0 + 1 || e.data.byteLength !== 9 + 2 * n) { ws.close(); return; }
     decodeRow(dv, 9, x0, x1, y);
+    paintRow(y);
   }
 }
 
@@ -129,10 +127,15 @@ function connect() {
   };
 }
 
-// -- input: touch events (multi-touch, ids 0..4) or mouse --------------
+// -- input: touch events (multi-touch, ids 0..4) and mouse = one finger.
+// Both paths stay bound on every device: a touch-capable laptop still
+// has a working trackpad, and a touch screen synthesizes compatibility
+// mouse events after every touch — which the mouse handlers must
+// recognize and drop or a touch drag would fight a phantom mouse drag.
 const slots = new Map(); // browser pointer id -> FT5x06 finger id
 const hasTouch = "ontouchstart" in window;
 let mouseDown = false;
+let lastTouch = -1e9; // when a real touch last happened (perf ms)
 
 function allocId(pointerId) {
   if (slots.has(pointerId)) return slots.get(pointerId);
@@ -155,10 +158,22 @@ function send(event, x, y, id) {
   }
 }
 
+// Browsers follow a touch with a synthetic mousedown/mousemove/mouseup
+// sequence.  A mouse event that arrives right after a real touch is that
+// echo, not the user's mouse.
+function mouseIsSynthetic() {
+  return hasTouch && performance.now() - lastTouch < 350;
+}
+
 if (hasTouch) {
   let lastMove = 0;
   canvas.addEventListener("touchstart", (e) => {
     e.preventDefault();
+    lastTouch = performance.now();
+    // A touch supersedes a mouse drag: the compat mouseup that follows
+    // it is suppressed, so without this the drag would never lift and
+    // the next mouse move would resume drawing with no button down.
+    mouseDown = false;
     for (const t of e.changedTouches) {
       const id = allocId(t.identifier);
       if (id < 0) continue;
@@ -169,7 +184,8 @@ if (hasTouch) {
   }, { passive: false });
   canvas.addEventListener("touchmove", (e) => {
     e.preventDefault();
-    const now = performance.now();
+    lastTouch = performance.now();
+    const now = lastTouch;
     if (now - lastMove < 15) return; // ~60 Hz is enough for a 480-line panel
     lastMove = now;
     for (const t of e.changedTouches) {
@@ -181,6 +197,7 @@ if (hasTouch) {
     }
   }, { passive: false });
   const lift = (e) => {
+    lastTouch = performance.now();
     for (const t of e.changedTouches) {
       const id = slots.get(t.identifier);
       if (id === undefined) continue;
@@ -191,31 +208,36 @@ if (hasTouch) {
   };
   canvas.addEventListener("touchend", lift);
   canvas.addEventListener("touchcancel", lift);
-} else {
-  // No Touch Events: plain mouse = one finger.  listen on window so a
-  // release outside the canvas still lifts.
-  canvas.addEventListener("mousedown", (e) => {
-    mouseDown = true;
-    const [x, y] = panelXY(e.clientX, e.clientY);
-    showCoords(x, y);
-    send("down", x, y, 0);
-    e.preventDefault();
-  });
-  window.addEventListener("mousemove", (e) => {
-    if (!mouseDown) return;
-    const [x, y] = panelXY(e.clientX, e.clientY);
-    showCoords(x, y);
-    send("move", x, y, 0);
-  });
-  const liftMouse = () => {
-    if (!mouseDown) return;
-    mouseDown = false;
-    coords.textContent = "";
-    send("up", 0, 0, 0);
-  };
-  window.addEventListener("mouseup", liftMouse);
-  window.addEventListener("mouseleave", liftMouse);
 }
+
+// Plain mouse = one finger.  Listened on window so a release outside
+// the canvas still lifts.  Bound on every device — see above.
+canvas.addEventListener("mousedown", (e) => {
+  if (mouseIsSynthetic()) return;
+  mouseDown = true;
+  const [x, y] = panelXY(e.clientX, e.clientY);
+  showCoords(x, y);
+  send("down", x, y, 0);
+  e.preventDefault();
+});
+let lastMouseMove = 0;
+window.addEventListener("mousemove", (e) => {
+  if (!mouseDown || mouseIsSynthetic()) return;
+  const now = performance.now();
+  if (now - lastMouseMove < 15) return; // pace like the touch path
+  lastMouseMove = now;
+  const [x, y] = panelXY(e.clientX, e.clientY);
+  showCoords(x, y);
+  send("move", x, y, 0);
+});
+const liftMouse = () => {
+  if (!mouseDown || mouseIsSynthetic()) return;
+  mouseDown = false;
+  coords.textContent = "";
+  send("up", 0, 0, 0);
+};
+window.addEventListener("mouseup", liftMouse);
+window.addEventListener("mouseleave", liftMouse);
 
 connect();
 </script>

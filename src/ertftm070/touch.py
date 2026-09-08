@@ -326,6 +326,24 @@ class Touch:
         self.touch_pins = touch_pins
         self.calibration = calibration
         self._i2c = i2c or _default_i2c(bus)
+        if i2c is not None:
+            # Fail fast on an incoherent simulated construction: the INT
+            # line (bus side) and the register file (I2C side) are two
+            # channels of one virtual FT5x06, so an injected
+            # SimulatedI2C must serve the bus's own touch state.  A
+            # separate state desynchronizes the channels — wait_touch()
+            # then hangs or times out spuriously while the other channel
+            # reports touches.
+            from .simulator import SimulatedBus, SimulatedI2C
+
+            if isinstance(bus, SimulatedBus) and isinstance(i2c, SimulatedI2C):
+                if getattr(i2c, "_state", None) is not bus.touch:
+                    raise ValueError(
+                        "a SimulatedI2C under a SimulatedBus must share the "
+                        "bus's touch state (state=bus.touch) — a separate "
+                        "state desynchronizes the INT line from the "
+                        "register file"
+                    )
         self._opened = False
         self._validate_pin_layout(bus)
 

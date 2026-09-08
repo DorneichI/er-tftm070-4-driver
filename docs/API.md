@@ -253,16 +253,30 @@ the touch INT line — idle low, high while any finger is down — so
 report failure.
 
 **Touch.** Browser mouse = one touch; Touch Events (phones/tablets) =
-multi-touch, up to the FT5x06's five points (ids 0–4). The server
-encodes the shared touch state into real FT5x06 registers, served by
+multi-touch, up to the FT5x06's five points (ids 0–4). Both input
+paths stay live on every device (a touch-capable laptop still draws
+with its trackpad; the compatibility mouse events a touch screen
+synthesizes after each touch are ignored). The server encodes the
+shared touch state into real FT5x06 registers, served by
 `SimulatedI2C` through the same interface `Touch` drives on hardware —
 `read()`, `read(mapped=True)`, `wait_touch()`, `reset()` all work.
+Each viewer owns the finger ids it pressed: a viewer that disconnects
+mid-press has its fingers lifted (no touch can stick down forever),
+and concurrent viewers cannot yank each other's points around the
+shared five-id map.
 
 **Server.** Binds `0.0.0.0:8000` by default (override:
 `ERTFTM070_SIM_HOST` / `ERTFTM070_SIM_PORT`), so a sim running on the
 Pi is viewable from any browser on the LAN. Port conflicts and a
 missing `websockets` package raise `Ertftm070Error` with a clear
-message — never `NotOnRaspberryPi`.
+message — never `NotOnRaspberryPi`. Every connection is greeted with a
+full-framebuffer snapshot and may inject touches, so the WebSocket
+endpoint enforces a same-origin policy: handshakes carrying an
+`Origin` that is not the page's own host are refused (open the page at
+`http://<host>:<port>/`, not as a `file://` or from another site), and
+raw clients without an `Origin` header are admitted. On an untrusted
+network, bind the loopback explicitly with
+`ERTFTM070_SIM_HOST=127.0.0.1`; binding `0.0.0.0` logs a warning.
 
 **Selection.** The env var is read once at import (like `BACKEND`
 itself); an explicit `Display(backend=…)` always wins. `Touch` keys its

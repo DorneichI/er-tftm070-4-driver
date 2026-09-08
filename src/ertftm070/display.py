@@ -236,8 +236,10 @@ class Display:
             self._bus = None
             raise
         self._opened = True
+        # The bus class, not the BACKEND env label: an injected backend
+        # (simulated, a fake in tests) is what actually drives rows.
         log.info("ertftm070 display ready (%dx%d, backend=%s)",
-                 self.width, self.height, backends.BACKEND)
+                 self.width, self.height, type(bus).__name__)
 
     def close(self) -> None:
         """Backlight off and release the bus.  Safe to call repeatedly.
@@ -427,7 +429,12 @@ class Display:
         # Row slices are the same objects on every pass.
         rows = [words[row * width : (row + 1) * width] for row in range(row_count)]
         b = self._bus_checked()
-        if vsync and backends.BACKEND == "slow":
+        # The crawl warning belongs to the bus actually driving the rows,
+        # not to the BACKEND env label: the simulated backend's ~1.3 ms
+        # paced rows fit the blanking window like the C backend's, and an
+        # explicitly injected slow bus must warn even when the env label
+        # says otherwise (e.g. ERTFTM070_DISPLAY=sim with an _MmioBus).
+        if vsync and isinstance(b, backends._MmioBus):
             _warn_slow_vsync()
         for _pass in range(self._write_passes):
             for yy, row in zip(range(y0, y1 + 1), rows):

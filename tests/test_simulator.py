@@ -36,6 +36,7 @@ from ertftm070.simulator import (
 from ertftm070.touch import (
     EVENT_CONTACT,
     EVENT_DOWN,
+    EVENT_UP,
     TD_STATUS,
     Touch,
     TouchPoint,
@@ -271,6 +272,18 @@ def test_touch_picks_simulated_i2c_and_reads_injected_points(sim_touch, sim_bus)
     assert sim_touch.wait_touch(timeout=0.05) is False  # sleep patched: spins out
 
 
+def test_touch_rejects_a_simulated_i2c_with_a_foreign_state(sim_bus):
+    """The INT line and the register file are two channels of one
+    virtual FT5x06: an injected SimulatedI2C must serve the bus's own
+    touch state, or wait_touch() hangs while read() reports touches."""
+    foreign = SimulatedI2C(state=TouchState())
+    with pytest.raises(ValueError, match="share the bus's touch state"):
+        Touch(sim_bus, i2c=foreign)
+    shared = SimulatedI2C(state=sim_bus.touch)
+    touch = Touch(sim_bus, i2c=shared)  # the coherent construction passes
+    assert touch._i2c is shared
+
+
 def test_touch_explicit_i2c_still_wins(sim_bus, monkeypatch):
     import ertftm070.touch as touch_module
 
@@ -288,8 +301,67 @@ def test_simulated_i2c_closed_bus_raises():
         i2c.read_reg(TD_STATUS, 1)
     i2c.open()
     assert i2c.read_reg(TD_STATUS, 1) == b"\x00"  # no touches
-    assert i2c.read_reg(0x03, 12) == b"\x00" * 12  # records padded
+    # A records claim shorter than the status count is padded with
+    # release-marked records — the chip holds EVENT_UP bytes in the slot
+    # for one frame.  Zero bytes would decode as a ghost press at (0,0).
+    release = bytes([EVENT_UP << 6, 0, 0, 0, 0, 0])
+    assert i2c.read_reg(0x03, 12) == release * 2
     assert i2c.read_reg(0x7F, 2) == b"\x00\x00"  # unmodeled reg: zeros
+
+
+def test_read_reg_pads_a_mid_read_release_with_event_up(sim_bus):
+    """The status/records two-read race: a finger lifted between the
+    TD_STATUS read and the records read must read back as releases, so
+    the app's read() cannot invent a down at (0, 0)."""
+    i2c = SimulatedI2C(state=sim_bus.touch)
+    i2c.open()
+    sim_bus.touch.update(0, 100, 100, "down", owner="probe")
+    assert i2c.read_reg(TD_STATUS, 1) == b"\x01"  # status sees the finger
+    sim_bus.touch.update(0, 100, 100, "up", owner="probe")  # ...then it lifts
+    records = i2c.read_reg(0x03, 6)
+    assert records[0] == EVENT_UP << 6  # release-marked, never zero-pressed
+    sim_bus.touch.update(0, 200, 200, "down", owner="probe")  # drop again
+    sim_bus.touch.update(1, 300, 300, "down", owner="probe")
+    assert i2c.read_reg(TD_STATUS, 1) == b"\x02"
+    sim_bus.touch.update(0, 200, 200, "up", owner="probe")  # one of two lifts
+    records = i2c.read_reg(0x03, 12)
+    assert records[0] == (EVENT_DOWN << 6) | (300 >> 8)  # id 1 still live
+    assert records[6] == EVENT_UP << 6  # id 0's slot reads as a release
+
+
+def test_touchstate_owners_isolate_two_viewers():
+    """Two browsers share five FT5x06 finger ids: neither may lift,
+    move or take over a finger the other pressed, and a viewer that
+    vanishes mid-press (no ``up`` ever arrives) has its fingers lifted
+    wholesale by release_owner."""
+    state = TouchState()
+    state.update(0, 10, 10, "down", owner="A")
+    assert state.sample()[0] == 1
+    # B presses id 0 too: the register map cannot hold both — B is
+    # refused, keeps its finger down in its own browser, and presses id 1.
+    state.update(0, 200, 200, "down", owner="B")
+    state.update(1, 300, 300, "down", owner="B")
+    assert state.sample()[0] == 2
+    assert decode_points(state.sample()[1], 2)[0].x == 10  # A still owns 0
+    state.update(0, 500, 500, "move", owner="B")  # B cannot move A's finger
+    state.update(0, 500, 500, "up", owner="B")  # B cannot lift A's finger
+    assert state.sample()[0] == 2
+    assert decode_points(state.sample()[1], 2)[0].x == 10
+    # A lifts its own finger — only A's goes away.
+    state.update(0, 10, 10, "up", owner="A")
+    assert decode_points(state.sample()[1], 1)[0].id == 1  # B's id 1 remains
+    # B's browser dies mid-press: no "up" is ever sent, but release_owner
+    # must clear B's fingers or the sim would hold them forever.
+    state.release_owner("B")
+    assert state.sample()[0] == 0
+    # The same id is immediately usable by a fresh viewer.
+    state.update(0, 400, 240, "down", owner="C")
+    assert decode_points(state.sample()[1], 1)[0] == TouchPoint(
+        x=400, y=240, id=0, event=EVENT_DOWN
+    )
+    # Headless callers (no owner) stay unrestricted, as before.
+    state.update(1, 5, 5, "down")
+    assert state.sample()[0] == 2
 
 
 # ----------------------------------------------------------------------
@@ -344,6 +416,11 @@ def ws_connect():
 
 @pytest.fixture
 def serving_bus():
+    # Without the [sim] extra the server cannot start: skip cleanly like
+    # the ws_connect fixture, so the section's tests never ERROR in a
+    # core-only install (test_missing_websockets_... keeps covering the
+    # raised-Ertftm070Error path on its own).
+    pytest.importorskip("websockets")
     bus = SimulatedBus(serve=True, host="127.0.0.1", port=0)
     bus.open()
     try:
@@ -383,6 +460,164 @@ def test_browser_touch_events_reach_the_bus(serving_bus, ws_connect):
         assert serving_bus.touch.sample()[1] and serving_bus.touch.sample()[0] == 1
         point = decode_points(serving_bus.touch.sample()[1], 1)[0]
         assert (point.x, point.y, point.id) == (42, 43, 0)
+
+
+def test_poison_touch_message_does_not_kill_the_reader(serving_bus, ws_connect):
+    """Messages that parse but are not well-formed touch events must be
+    skipped one at a time, never end the read loop: int(float("inf"))
+    from a 1e309 number raises OverflowError (not caught by the
+    ValueError guard), and non-object JSON ([1,2,3], null) has no .get
+    at all."""
+    with ws_connect(f"ws://127.0.0.1:{serving_bus.server_port}/ws") as ws:
+        ws.recv(timeout=5)  # the FULL frame
+        for poison in (
+            '{"type": "touch", "event": "down", "x": 1e309, "y": 0, "id": 0}',
+            "[1, 2, 3]",
+            "null",
+            '"just text"',
+        ):
+            ws.send(poison)
+        ws.send(json.dumps({"type": "touch", "event": "down", "x": 11, "y": 12}))
+        deadline = time.monotonic() + 5
+        while serving_bus.touch.sample()[0] != 1 and time.monotonic() < deadline:
+            time.sleep(0.01)
+        point = decode_points(serving_bus.touch.sample()[1], 1)[0]
+        assert (point.x, point.y) == (11, 12)  # the follow-up message landed
+        ws.send(json.dumps({"type": "touch", "event": "move", "x": 77, "y": 78}))
+        deadline = time.monotonic() + 5
+        while time.monotonic() < deadline:
+            points = [
+                p for p in decode_points(serving_bus.touch.sample()[1], 1)
+                if p.event == EVENT_CONTACT
+            ]
+            if points and points[0].x == 77:
+                break
+            time.sleep(0.01)
+        assert [p for p in decode_points(serving_bus.touch.sample()[1], 1)
+                if p.event == EVENT_CONTACT][0].x == 77
+
+
+def test_disconnect_mid_press_releases_the_finger(serving_bus, ws_connect):
+    """A viewer that disappears while its finger is down sends no "up".
+    The connection teardown must lift the finger, or the app's
+    wait_touch() would see a press that no longer exists, forever."""
+    ws = ws_connect(f"ws://127.0.0.1:{serving_bus.server_port}/ws")
+    ws.recv(timeout=5)  # the FULL frame
+    ws.send(json.dumps({"type": "touch", "event": "down", "x": 400, "y": 240}))
+    deadline = time.monotonic() + 5
+    while serving_bus.touch.sample()[0] != 1 and time.monotonic() < deadline:
+        time.sleep(0.01)
+    assert serving_bus.touch.sample()[0] == 1
+    ws.close()  # dropped tab: no "up" is ever sent
+    deadline = time.monotonic() + 5
+    while serving_bus.touch.sample()[0] != 0 and time.monotonic() < deadline:
+        time.sleep(0.01)
+    assert serving_bus.touch.sample()[0] == 0  # released on disconnect
+
+
+def test_cross_origin_handshake_is_refused(serving_bus, ws_connect):
+    pytest.importorskip("websockets")
+    from websockets.exceptions import InvalidStatus
+
+    url = f"ws://127.0.0.1:{serving_bus.server_port}/ws"
+    # A page on another origin (a malicious site, another LAN device)
+    # must not reach the framebuffer or the touch-injection channel.
+    with pytest.raises(InvalidStatus):
+        ws_connect(url, origin="http://evil.example")
+    # The served page itself is same-origin, and non-browser clients
+    # send no Origin at all — both must keep working.
+    with ws_connect(url, origin=f"http://127.0.0.1:{serving_bus.server_port}") as ws:
+        assert ws.recv(timeout=5)[0] == FULL_MSG
+    with ws_connect(url) as ws:
+        assert ws.recv(timeout=5)[0] == FULL_MSG
+
+
+def test_slow_vsync_warning_follows_the_bus_not_the_env_label(sim_backend, monkeypatch):
+    """The crawl warning must key on the bus actually driving rows: an
+    injected slow (_MmioBus) backend warns even under the sim env label,
+    and the simulated bus does not warn even when the C extension is
+    missing (BACKEND == "slow") — its ~1.3 ms paced rows fit the
+    blanking window."""
+    import ertftm070.display as display_module
+    from ertftm070.backends import _MmioBus
+
+    calls = []
+    monkeypatch.setattr(display_module, "_warn_slow_vsync", lambda: calls.append(1))
+    monkeypatch.setattr(display_module, "_warned_slow_vsync", False)
+    monkeypatch.setattr(display_module.time, "sleep", lambda seconds: None)
+
+    sim = SimulatedBus(serve=False)
+    sim.open()
+    with Display(backend=sim, auto_init=False, backlight=False) as lcd:
+        lcd.fill_rect(0, 0, 2, 1, 0xF800, vsync=True)
+    assert calls == []  # the sim backend fits the blanking window
+
+    class SlowNoop(_MmioBus):
+        """An _MmioBus whose hardware calls are inert, with a TE pin
+        that alternates every poll so blanking waits find edges."""
+
+        def __init__(self):
+            super().__init__(DEFAULT_PINS)
+            self._te_tick = 0
+
+        def open(self):
+            pass
+
+        def close(self):
+            pass
+
+        def pin_mode(self, pin, output):
+            pass
+
+        def pin_write(self, pin, level):
+            pass
+
+        def pin_read(self, pin):
+            self._te_tick += 1
+            return bool(self._te_tick % 2)
+
+        def write_byte(self, value):
+            pass
+
+        def read_word(self):
+            return 0
+
+        def pixel_stream(self, buf):
+            pass
+
+        def row_blit(self, x0, x1, y, buf):
+            pass
+
+    with Display(backend=SlowNoop(), auto_init=False, backlight=False) as lcd:
+        lcd.fill_rect(0, 0, 2, 1, 0xF800, vsync=True)
+    assert calls == [1]  # the slow backend's rows miss the window
+
+
+def test_close_with_stalled_clients_stays_bounded(ws_connect):
+    """Clients that never read nor close must not scale the close()
+    budget: connection shutdown runs concurrently with one cap per
+    connection instead of serially with a cap per connection."""
+    pytest.importorskip("websockets")
+    bus = SimulatedBus(serve=True, host="127.0.0.1", port=0)
+    bus.open()
+    url = f"ws://127.0.0.1:{bus.server_port}/ws"
+    stalled = []
+    try:
+        for _ in range(6):
+            ws = ws_connect(url)
+            ws.recv(timeout=5)  # the FULL frame
+            stalled.append(ws)
+        started = time.monotonic()
+        bus.close()
+        elapsed = time.monotonic() - started
+        assert elapsed < 2.0, f"close() took {elapsed:.2f}s with 6 stalled clients"
+    finally:
+        for ws in stalled:
+            try:
+                ws.close()
+            except Exception:
+                pass
+        bus.close()
 
 
 def test_port_conflict_is_a_sim_error_not_notonraspberrypi():
