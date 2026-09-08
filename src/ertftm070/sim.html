@@ -1,0 +1,245 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, user-scalable=no">
+<title>ertftm070 simulator</title>
+<style>
+  :root { color-scheme: dark; }
+  body {
+    margin: 0; height: 100vh; display: flex; flex-direction: column;
+    background: #101014; color: #c8c8d0;
+    font: 13px/1.4 system-ui, sans-serif; overflow: hidden;
+  }
+  #wrap { flex: 1; display: flex; align-items: center; justify-content: center; min-height: 0; }
+  canvas {
+    image-rendering: pixelated; background: #000;
+    touch-action: none; user-select: none;
+  }
+  #status { padding: 8px 12px; opacity: .85; }
+  #status .dot {
+    display: inline-block; width: 8px; height: 8px;
+    border-radius: 50%; background: #d33; margin-right: 6px;
+  }
+  #status.ok .dot { background: #3b3; }
+</style>
+</head>
+<body>
+<div id="wrap"><canvas id="panel" width="800" height="480"></canvas></div>
+<div id="status"><span class="dot"></span><span id="text">connecting…</span> <span id="coords"></span></div>
+<script>
+"use strict";
+// One 800x480 panel frame.  The backing store never changes size — CSS
+// scales the canvas to fit the window, aspect preserved.
+const W = 800, H = 480, MAX_FINGERS = 5;
+const canvas = document.getElementById("panel");
+const ctx = canvas.getContext("2d");
+const wrap = document.getElementById("wrap");
+const status = document.getElementById("status");
+const statusText = document.getElementById("text");
+const img = new ImageData(W, H); // persistent RGBA copy of the framebuffer
+const coords = document.getElementById("coords");
+// Painting uses ONLY the simple putImageData(imagedata, dx, dy) form: the
+// dirty-rect overload paints the whole image at (dx, dy) in some
+// browsers, which offsets every row by its own origin.  Rows are full
+// 800x1 strips copied from the framebuffer buffer, so the simple form
+// repaints exactly one row per message.
+const rowImg = ctx.createImageData(W, 1);
+
+function fit() {
+  // The wrap may not have laid out yet on the first call — fall back to
+  // the window.  The canvas must never exceed its container: clicks map
+  // through its rect, so an overflowing canvas draws touches off-screen.
+  const availW = wrap.clientWidth || window.innerWidth;
+  const availH = wrap.clientHeight || window.innerHeight - 40;
+  const scale = Math.min(availW / W, availH / H);
+  canvas.style.width = Math.floor(W * scale) + "px";
+  canvas.style.height = Math.floor(H * scale) + "px";
+}
+window.addEventListener("resize", fit);
+fit();
+
+function setStatus(ok, text) {
+  status.classList.toggle("ok", ok);
+  statusText.textContent = text;
+  fit(); // the status line's height can change: keep the canvas inside
+}
+
+function showCoords(x, y) {
+  coords.textContent = "x=" + x + " y=" + y;
+}
+
+// -- protocol: binary frames, little-endian ---------------------------
+// 0x02 FULL: u8 type | W*H*2 bytes of RGB565 (one per connect, first)
+// 0x01 ROW:  u8 type | u16 x0 | u16 x1 | u16 y | u16 nwords | nwords*u16
+
+function decodeRow(dv, off, x0, x1, y) {
+  let o = (y * W + x0) * 4;
+  for (let x = x0; x <= x1; x++) {
+    const v = dv.getUint16(off, true);
+    off += 2;
+    // Mask each field before expanding — the shifts alone would carry
+    // the higher bits along and saturate G/B for most colors.
+    const r = (v >> 11) & 31, g = (v >> 5) & 63, b = v & 31;
+    img.data[o++] = (r << 3) | (r >> 2); // R 5 -> 8 bits
+    img.data[o++] = (g << 2) | (g >> 4); // G 6 -> 8 bits
+    img.data[o++] = (b << 3) | (b >> 2); // B 5 -> 8 bits
+    img.data[o++] = 255;
+  }
+}
+
+function paintRow(y) {
+  rowImg.data.set(img.data.subarray(y * W * 4, (y + 1) * W * 4));
+  ctx.putImageData(rowImg, 0, y); // simple form: exactly one row
+}
+
+function onMessage(e) {
+  const dv = new DataView(e.data);
+  if (dv.getUint8(0) === 0x02) { // FULL frame
+    if (e.data.byteLength !== 1 + W * H * 2) { ws.close(); return; }
+    for (let y = 0; y < H; y++) decodeRow(dv, 1 + y * W * 2, 0, W - 1, y);
+    ctx.putImageData(img, 0, 0); // simple form: one repaint for the whole frame
+  } else if (dv.getUint8(0) === 0x01) { // ROW
+    if (e.data.byteLength < 9) { ws.close(); return; }
+    const x0 = dv.getUint16(1, true), x1 = dv.getUint16(3, true);
+    const y = dv.getUint16(5, true), n = dv.getUint16(7, true);
+    if (n !== x1 - x0 + 1 || e.data.byteLength !== 9 + 2 * n) { ws.close(); return; }
+    decodeRow(dv, 9, x0, x1, y);
+    paintRow(y);
+  }
+}
+
+// -- transport: stateless — every connect is greeted with a FULL frame,
+// so reconnecting resyncs by itself ------------------------------------
+let ws, attempts = 0;
+
+function connect() {
+  ws = new WebSocket("ws://" + location.host + "/ws");
+  ws.binaryType = "arraybuffer";
+  ws.onopen = () => {
+    attempts = 0;
+    setStatus(true, "connected · " + location.host + " · mouse or touch to input");
+  };
+  ws.onmessage = onMessage;
+  ws.onclose = () => {
+    setStatus(false, "reconnecting…");
+    setTimeout(connect, Math.min(3000, 250 * ++attempts));
+  };
+}
+
+// -- input: touch events (multi-touch, ids 0..4) and mouse = one finger.
+// Both paths stay bound on every device: a touch-capable laptop still
+// has a working trackpad, and a touch screen synthesizes compatibility
+// mouse events after every touch — which the mouse handlers must
+// recognize and drop or a touch drag would fight a phantom mouse drag.
+const slots = new Map(); // browser pointer id -> FT5x06 finger id
+const hasTouch = "ontouchstart" in window;
+let mouseDown = false;
+let lastTouch = -1e9; // when a real touch last happened (perf ms)
+
+function allocId(pointerId) {
+  if (slots.has(pointerId)) return slots.get(pointerId);
+  for (let id = 0; id < MAX_FINGERS; id++) {
+    if (![...slots.values()].includes(id)) { slots.set(pointerId, id); return id; }
+  }
+  return -1; // all five fingers in use
+}
+
+function panelXY(clientX, clientY) {
+  const rect = canvas.getBoundingClientRect();
+  const x = Math.floor((clientX - rect.left) * W / rect.width);
+  const y = Math.floor((clientY - rect.top) * H / rect.height);
+  return [Math.min(Math.max(x, 0), W - 1), Math.min(Math.max(y, 0), H - 1)];
+}
+
+function send(event, x, y, id) {
+  if (ws && ws.readyState === WebSocket.OPEN) {
+    ws.send(JSON.stringify({ type: "touch", event, x, y, id }));
+  }
+}
+
+// Browsers follow a touch with a synthetic mousedown/mousemove/mouseup
+// sequence.  A mouse event that arrives right after a real touch is that
+// echo, not the user's mouse.
+function mouseIsSynthetic() {
+  return hasTouch && performance.now() - lastTouch < 350;
+}
+
+if (hasTouch) {
+  let lastMove = 0;
+  canvas.addEventListener("touchstart", (e) => {
+    e.preventDefault();
+    lastTouch = performance.now();
+    // A touch supersedes a mouse drag: the compat mouseup that follows
+    // it is suppressed, so without this the drag would never lift and
+    // the next mouse move would resume drawing with no button down.
+    mouseDown = false;
+    for (const t of e.changedTouches) {
+      const id = allocId(t.identifier);
+      if (id < 0) continue;
+      const [x, y] = panelXY(t.clientX, t.clientY);
+      showCoords(x, y);
+      send("down", x, y, id);
+    }
+  }, { passive: false });
+  canvas.addEventListener("touchmove", (e) => {
+    e.preventDefault();
+    lastTouch = performance.now();
+    const now = lastTouch;
+    if (now - lastMove < 15) return; // ~60 Hz is enough for a 480-line panel
+    lastMove = now;
+    for (const t of e.changedTouches) {
+      const id = slots.get(t.identifier);
+      if (id === undefined) continue;
+      const [x, y] = panelXY(t.clientX, t.clientY);
+      showCoords(x, y);
+      send("move", x, y, id);
+    }
+  }, { passive: false });
+  const lift = (e) => {
+    lastTouch = performance.now();
+    for (const t of e.changedTouches) {
+      const id = slots.get(t.identifier);
+      if (id === undefined) continue;
+      slots.delete(t.identifier);
+      coords.textContent = "";
+      send("up", 0, 0, id); // release carries no position on the FT5x06
+    }
+  };
+  canvas.addEventListener("touchend", lift);
+  canvas.addEventListener("touchcancel", lift);
+}
+
+// Plain mouse = one finger.  Listened on window so a release outside
+// the canvas still lifts.  Bound on every device — see above.
+canvas.addEventListener("mousedown", (e) => {
+  if (mouseIsSynthetic()) return;
+  mouseDown = true;
+  const [x, y] = panelXY(e.clientX, e.clientY);
+  showCoords(x, y);
+  send("down", x, y, 0);
+  e.preventDefault();
+});
+let lastMouseMove = 0;
+window.addEventListener("mousemove", (e) => {
+  if (!mouseDown || mouseIsSynthetic()) return;
+  const now = performance.now();
+  if (now - lastMouseMove < 15) return; // pace like the touch path
+  lastMouseMove = now;
+  const [x, y] = panelXY(e.clientX, e.clientY);
+  showCoords(x, y);
+  send("move", x, y, 0);
+});
+const liftMouse = () => {
+  if (!mouseDown || mouseIsSynthetic()) return;
+  mouseDown = false;
+  coords.textContent = "";
+  send("up", 0, 0, 0);
+};
+window.addEventListener("mouseup", liftMouse);
+window.addEventListener("mouseleave", liftMouse);
+
+connect();
+</script>
+</body>
+</html>

@@ -1,23 +1,28 @@
 """Bus backends: how bytes and pixels reach the display.
 
 Two interchangeable implementations of the same small :class:`Bus`
-protocol:
+protocol for real hardware, plus a simulator:
 
 * :class:`_FastioBus` — wraps the compiled ``ertftm070._fastio`` C
   extension (~0.6 s full screen).
 * :class:`_MmioBus` — pure Python over ``/dev/gpiomem`` via ``mmap``
   (~10 s full screen).  Used automatically when the extension was not
   built, or forced with ``ERTFTM070_FORCE_SLOW=1``.
+* :class:`~ertftm070.simulator.SimulatedBus` — an in-memory framebuffer
+  streamed to a browser over WebSocket, no hardware anywhere.  Selected
+  with ``ERTFTM070_DISPLAY=sim``.
 
 Which one is active is decided once at import time and exposed as
-``ertftm070.BACKEND`` (``"fast"`` or ``"slow"``).  Both are otherwise
-identical: register-level operations keep their CS/DC framing in Python
-(``Display``), while blits delegate one row per call to the backend
-(:meth:`Bus.row_blit`) so the fast path pays a single C call per row.
+``ertftm070.BACKEND`` (``"fast"``, ``"slow"`` or ``"sim"``).  All are
+otherwise identical: register-level operations keep their CS/DC framing
+in Python (``Display``), while blits delegate one row per call to the
+backend (:meth:`Bus.row_blit`) so the fast path pays a single C call per
+row.
 
-Both backends need the BCM2835-style GPIO block exposed by
+The two real backends need the BCM2835-style GPIO block exposed by
 ``/dev/gpiomem``: Raspberry Pi Zero/1/2/3/4.  On Pi 5 (RP1) or any
-non-Pi machine, :meth:`open` raises :class:`~ertftm070.NotOnRaspberryPi`.
+non-Pi machine, :meth:`open` raises :class:`~ertftm070.NotOnRaspberryPi`;
+the simulator opens anywhere.
 """
 from __future__ import annotations
 
@@ -224,7 +229,16 @@ def _row_blit_traffic(bus: Bus, x0: int, x1: int, y: int, buf: Any) -> None:
 
 _fastio = None  # type: Optional[Any]
 
-if os.environ.get("ERTFTM070_FORCE_SLOW") == "1":
+# ERTFTM070_DISPLAY=sim selects the simulated browser backend.  Checked
+# first (and, like every backend choice, once at import — set it before
+# starting Python): it must win over FORCE_SLOW and must not trigger the
+# missing-extension warning, because sim mode deliberately avoids both
+# real backends and their /dev/gpiomem.
+_sim = os.environ.get("ERTFTM070_DISPLAY") == "sim"
+
+if _sim:
+    _forced_slow = False
+elif os.environ.get("ERTFTM070_FORCE_SLOW") == "1":
     _forced_slow = True
 else:
     _forced_slow = False
@@ -233,7 +247,7 @@ else:
     except ImportError:
         _fastio = None
 
-BACKEND = "fast" if _fastio is not None else "slow"
+BACKEND = "sim" if _sim else ("fast" if _fastio is not None else "slow")
 
 if BACKEND == "slow" and not _forced_slow:
     warnings.warn(
@@ -253,6 +267,12 @@ def get_backend(pins: Pins = DEFAULT_PINS, backend: Bus | None = None) -> Bus:
     """
     if backend is not None:
         return backend
+    if _sim:
+        # Imported here: the simulator (and its optional websockets
+        # dependency) stays out of the hardware path entirely.
+        from .simulator import SimulatedBus
+
+        return SimulatedBus(pins)
     if _fastio is not None:
         return _FastioBus(pins)
     return _MmioBus(pins)

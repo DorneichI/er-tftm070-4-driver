@@ -15,7 +15,9 @@ Quickstart::
         lcd.image(pil_image, x=0, y=0)
 
 ``BACKEND`` reports which pixel path is active: ``"fast"`` (the compiled
-C extension) or ``"slow"`` (the pure-Python fallback).
+C extension), ``"slow"`` (the pure-Python fallback) or ``"sim"`` (the
+browser simulator, selected with ``ERTFTM070_DISPLAY=sim`` — set it
+before starting Python, like every backend choice).
 
 Full wiring table: docs/WIRING.md.  Debugging lore: docs/LESSONS.md.
 """

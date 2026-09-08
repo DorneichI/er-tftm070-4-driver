@@ -10,3 +10,7 @@ prune tests
 prune .venv*
 recursive-exclude src *.egg-info*
 exclude setup.cfg
+
+# The simulator's browser page — wheel data (package-data) and sdist
+# must both carry it; being explicit costs nothing.
+include src/ertftm070/sim.html

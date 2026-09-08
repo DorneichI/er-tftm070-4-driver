@@ -101,6 +101,35 @@ Or from a source checkout: `python3 examples/color_bars.py`,
 `python3 examples/show_image.py photo.png`,
 `python3 examples/small_demo.py`.
 
+## Simulator (no hardware needed)
+
+Develop and demo on a laptop, no Raspberry Pi, no panel — the driver
+renders into a browser instead:
+
+```bash
+pip install 'ertftm070[sim]'              # the websockets extra
+ERTFTM070_DISPLAY=sim ertftm070 bars      # open http://localhost:8000/
+ERTFTM070_DISPLAY=sim python3 examples/touch_paint.py   # draw with the mouse
+```
+
+The simulated backend speaks the same `Bus` protocol, so dashboard and
+example code runs **unchanged**: draw calls land in an 800×480
+framebuffer streamed row-by-row to the browser (raw RGB565, low
+latency), the mouse is one touch and phones/tablets on the LAN inject
+multi-touch (up to the FT5x06's five points), and the TE line is
+emulated at the panel's real ~53.7 Hz so `vsync=`, `refresh_rate()` and
+`wait_touch()` behave. `selftest`/`gramcheck` report failure in sim
+(register read-back is not simulated), and `lcd.sleep()` does not dim
+the picture — only the flow is exercised.
+
+The server binds `0.0.0.0` by default, so the browser does not have to
+be on the same machine: run the app on the Pi and open
+`http://raspberry.local:8000/` on the Mac. Host/port override with
+`ERTFTM070_SIM_HOST`/`ERTFTM070_SIM_PORT`; the env var is read once at
+import (set it before starting Python), and an explicit
+`Display(backend=…)` still wins. Full details in
+[docs/API.md](docs/API.md).
+
 ## The API
 
 | What | How |
@@ -225,7 +254,7 @@ at 60× less code.
 
 ```bash
 pip install -e ".[dev]"
-pytest          # 89 tests, no hardware needed (a fake bus stands in)
+pytest          # 189 tests, no hardware needed (a fake bus stands in)
 ruff check src tests examples
 ```
 
