@@ -4,7 +4,7 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [0.2.0] — 2026-09-08
 
 ### Added
 
@@ -40,12 +40,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
     still wins over the env var, and `Touch` keys its transport off the
     bus, not the environment, so injected backends keep real-I2C
     semantics.
-- `tests/test_simulator.py` — 25 tests: headless framebuffer/validation/
+- `tests/test_simulator.py` — 33 tests: headless framebuffer/validation/
   pin/TE coverage, touch-state ↔ register round-trips, `Touch`
   end-to-end over the simulated register file, env selection, and
   WebSocket server smoke tests (page, protocol, touch injection, port
-  conflicts, missing-package diagnostics). CI's `dev` extra gained
-  `websockets` so the server tests run in the matrix.
+  conflicts, missing-package diagnostics), plus regression coverage for
+  the origin gate, per-viewer touch ownership, disconnect cleanup, and
+  poison-frame survival. CI's `dev` extra gained `websockets` so the
+  server tests run in the matrix.
+
+### Security
+
+- The sim's WebSocket server refuses cross-origin browser handshakes
+  (the `Origin` header must match the `Host`), so a page open anywhere
+  on the operator's machine or LAN cannot silently read the framebuffer
+  or inject touches into the app under development; binding a
+  non-loopback host logs a startup warning. Non-browser clients that
+  send no `Origin` (raw LAN scripts) stay admitted by design.
 
 ### Changed
 
