@@ -22,6 +22,7 @@ so the core package has zero runtime dependencies.
 """
 from __future__ import annotations
 
+import functools
 import logging
 import statistics
 import time
@@ -97,18 +98,30 @@ _BYTE_BITS = int.from_bytes(b"\x01" * (2 * _PANEL_W), "little")
 _ALL_KNOWN_W = b"\x01" * _PANEL_W  # a fully-written shadow row
 
 
+@functools.cache
+def _full_word_mark(width: int) -> int:
+    """A big-int with every word's marker bit set, for a row ``width``
+    words wide — the "whole row differs" pattern of :func:`_row_spans`."""
+    return int.from_bytes(b"\x00\x01" * width, "little")
+
+
 def _row_spans(a: bytes, b: bytes, width: int) -> list[tuple[int, int]]:
     """``(col0, col1)`` inclusive spans where the row's ``a`` bytes
     differ from ``b`` (both ``2*width`` long).
 
-    The word-level diff is one big-int XOR plus an OR-reduction that
+    Clean rows short-circuit on one memcmp (``a == b``) — the common
+    case, and the reason an identical redraw costs ~µs per row.  A
+    changed row goes through one big-int XOR plus an OR-reduction that
     folds each byte down to its bit 0, keeps those bits, then combines
     the word's two bytes into a single marker bit at ``16*w + 8`` —
     combining only after the mask keeps each word's marker free of its
-    neighbors.  The run walk below then runs once per changed word,
-    never per pixel.  Changed words closer than ``_MIN_RUN`` unchanged
-    words are bridged into one span; more than ``_MAX_SPANS`` spans
-    collapse to one whole-row span."""
+    neighbors.  A row whose every word differs matches
+    :func:`_full_word_mark` and skips the walk; otherwise the run walk
+    below runs once per changed word, never per pixel.  Changed words
+    closer than ``_MIN_RUN`` unchanged words are bridged into one span;
+    more than ``_MAX_SPANS`` spans collapse to one whole-row span."""
+    if a == b:
+        return []
     d = int.from_bytes(a, "little") ^ int.from_bytes(b, "little")
     d |= d >> 1  # fold each byte down to its bit 0...
     d |= d >> 2
@@ -116,6 +129,8 @@ def _row_spans(a: bytes, b: bytes, width: int) -> list[tuple[int, int]]:
     d &= _BYTE_BITS  # ...and keep only those bits
     d |= d >> 8  # combine the word's two bytes into one marker bit
     d &= _WORD_BIT_MASK
+    if d == _full_word_mark(width):
+        return [(0, width - 1)]  # every word changed: skip the walk
     if not d:
         return []
     spans = []
@@ -139,20 +154,36 @@ def _row_spans(a: bytes, b: bytes, width: int) -> list[tuple[int, int]]:
     return spans
 
 
-def _dirty_spans(shadow, known, rows, x0: int, y0: int) -> list[tuple[int, int, int]]:
+def _dirty_spans(
+    shadow, known, words, rows, x0: int, y0: int
+) -> list[tuple[int, int, int]]:
     """``(row, col0, col1)`` — the changed spans of one blit against
     the shadow, column offsets relative to each row (inclusive).
 
-    ``rows`` are the window-ordered 16-bit memoryviews of the blit;
-    row ``i`` covers window row ``y0+i``, columns ``x0`` to
-    ``x0+len(row)-1``.  Span windows are ``x0+col0 .. x0+col1``.  A
-    ``None`` shadow (unsynchronized) makes every row one full-width
-    span — the exact traffic an undiffed blit emits.  A window that
-    overlaps never-written pixels (``known``) is written whole too:
-    unknown pixels are always dirty, whatever the shadow bytes say.
+    ``words`` is the contiguous 16-bit view of the whole blit and
+    ``rows`` its window-ordered per-row slices; row ``i`` covers window
+    row ``y0+i``, columns ``x0`` to ``x0+len(row)-1``.  Span windows
+    are ``x0+col0 .. x0+col1``.  A ``None`` shadow (unsynchronized)
+    makes every row one full-width span — the exact traffic an
+    undiffed blit emits.  A window that overlaps never-written pixels
+    (``known``) is written whole too: unknown pixels are always dirty,
+    whatever the shadow bytes say.  A full-width window is contiguous
+    in the shadow, so an unchanged screen is cleared by one memcmp
+    each (bytes and known-ness) instead of a per-row diff — the
+    common identical-redraw case.
     """
     if shadow is None:
         return [(i, 0, len(rows[i]) - 1) for i in range(len(rows))]
+    width = len(rows[0])
+    if x0 == 0 and width == _PANEL_W:
+        row_count = len(rows)
+        woff = y0 * _PANEL_W
+        if (
+            known[woff : woff + row_count * _PANEL_W] == _ALL_KNOWN_W * row_count
+            and words.tobytes()
+            == shadow[2 * woff : 2 * (woff + row_count * _PANEL_W)]
+        ):
+            return []
     spans = []
     for i, row in enumerate(rows):
         w = len(row)
@@ -570,7 +601,7 @@ class Display:
         if force:
             spans = [(i, 0, width - 1) for i in range(row_count)]
         else:
-            spans = _dirty_spans(self._shadow, self._known, rows, x0, y0)
+            spans = _dirty_spans(self._shadow, self._known, words, rows, x0, y0)
         if not spans:
             return
         try:

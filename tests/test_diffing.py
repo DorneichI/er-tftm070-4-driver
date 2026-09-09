@@ -241,6 +241,22 @@ def test_never_written_pixels_are_always_dirty(display, bus):
     assert bus.row_blit_calls == [(1, 1, 1)]
 
 
+def test_identical_full_width_rect_emits_nothing(display, bus):
+    display.open()
+    display.fill(0)
+    bus.row_blit_calls.clear()
+    display.fill_rect(0, 0, 800, 100, 0)  # full-width window, unchanged
+    assert bus.row_blit_calls == []
+
+
+def test_full_width_window_over_unknown_rows_still_writes(display, bus):
+    display.open()
+    display.fill_rect(5, 5, 10, 4, 0x07E0)  # rows 0-3 were never written
+    bus.row_blit_calls.clear()
+    display.fill_rect(0, 0, 800, 4, 0x0000)  # black on unknown rows
+    assert bus.row_blit_calls == [(0, 799, y) for y in range(4)]
+
+
 # ----------------------------------------------------------------------
 # Simulator oracle: what the panel ends up showing
 # ----------------------------------------------------------------------

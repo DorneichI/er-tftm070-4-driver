@@ -18,12 +18,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   narrower windows; scattered rows fall back to one whole-row span.
   An identical redraw emits nothing, and a mostly-static frame (a
   dashboard clock) costs milliseconds instead of the ~0.6 s of a full
-  rewrite. The diff runs in pure Python at C speed (one big-int XOR +
-  OR-reduction per row, a Python loop only per changed run) —
-  ~2–3 ms for a full-screen compare. Spans are computed once and
-  replayed for every `write_passes` pass; the shadow is committed only
-  after all passes succeed, and any exception mid-blit invalidates it
-  (the next draw re-emits everything).
+  rewrite. The diff runs in pure Python at C speed: a memcmp per clean
+  row, one big-int XOR + OR-reduction for a changed row (a Python loop
+  only per changed run), and one memcmp each for an unchanged
+  full-width window. Measured on the Pi Zero W: an identical
+  full-screen redraw diffs in **~23 ms** and a changed 100×40 rect in
+  **~13 ms**, against ~0.6 s per full write. Spans are computed once
+  and replayed for every `write_passes` pass; the shadow is committed
+  only after all passes succeed, and any exception mid-blit
+  invalidates it (the next draw re-emits everything). Verified on
+  hardware 2026-09-09: a span-window blit read back from GRAM leaves
+  the untouched columns intact.
 - `force=True` on `fill`/`fill_rect`/`set_pixel`/`image` — skip the
   diff and write every pixel of the window (the brute-force escape
   hatch).
@@ -39,12 +44,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `fill_rect` and `image` now write one burst per *span* rather than
   per row — a fully-changed row still emits byte-identical traffic to
   before (`vsync=True` paces each emitted span).
-- `tests/test_diffing.py` — 20 tests: FakeBus traffic (first draw full,
+- `tests/test_diffing.py` — 22 tests: FakeBus traffic (first draw full,
   identical redraw silent, span narrowing, gap bridging/splitting,
-  `_MAX_SPANS` fallback, `force`, `invalidate`, `write_passes`,
-  vsync TE-pulse counts, rotation invariance, exception invalidation)
-  plus simulator-oracle checks (`_shadow` == `SimulatedBus.full_frame()`
-  after mixed draws).
+  `_MAX_SPANS` fallback, full-width fast path + its known-map guard,
+  `force`, `invalidate`, `write_passes`, vsync TE-pulse counts,
+  rotation invariance, exception invalidation) plus simulator-oracle
+  checks (`_shadow` == `SimulatedBus.full_frame()` after mixed draws).
 
 ## [0.2.0] — 2026-09-08
 
