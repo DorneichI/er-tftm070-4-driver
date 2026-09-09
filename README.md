@@ -201,10 +201,10 @@ graph in a mostly static UI — cost the changed spans instead of a full
 rewrite. Measured on a Pi Zero W: an identical full-screen redraw diffs
 in **~23 ms** and a changed 100×40 rect in **~13 ms**, against ~0.6 s
 per full write. An identical redraw emits nothing. `force=True` on any
-draw call skips the diff; `lcd.invalidate()` discards the shadow and
-forces a full redraw — the escapes for the rare write word the GRAM
-arbitration swallows in *every* pass, which would otherwise leave the
-panel out of sync with the shadow.
+draw call skips the diff; `lcd.invalidate()` discards the shadow so the
+next draw covering a region rewrites it in full — the escapes for the
+rare write word the GRAM arbitration swallows in *every* pass, which
+would otherwise leave the panel out of sync with the shadow.
 
 ## Touch
 

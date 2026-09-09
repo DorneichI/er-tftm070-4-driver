@@ -127,12 +127,10 @@ def _row_spans(a: bytes, b: bytes, width: int) -> list[tuple[int, int]]:
     d |= d >> 2
     d |= d >> 4
     d &= _BYTE_BITS  # ...and keep only those bits
-    d |= d >> 8  # combine the word's two bytes into one marker bit
+    d |= d << 8  # combine the word's two bytes into one marker bit
     d &= _WORD_BIT_MASK
     if d == _full_word_mark(width):
         return [(0, width - 1)]  # every word changed: skip the walk
-    if not d:
-        return []
     spans = []
     base = 0  # absolute bit index of d's bit 0
     while d:
@@ -142,15 +140,13 @@ def _row_spans(a: bytes, b: bytes, width: int) -> list[tuple[int, int]]:
         d >>= lsb + 1  # drop the clean stretch and the marker itself
         start = base + lsb
         base += lsb + 1
-        end = start
         while d:
             gap = (d & -d).bit_length() - 1  # clean bits to the next marker
             if gap >= _MIN_RUN_BITS:  # _MIN_RUN unchanged words: split
                 break
             d >>= gap + 1  # bridge: drop the gap and the marker
-            end = base + gap
             base += gap + 1
-        spans.append((start // 16, end // 16))
+        spans.append((start // 16, (base - 1) // 16))
     return spans
 
 
@@ -300,7 +296,7 @@ class Display:
     spans are written, and an identical redraw emits nothing.  Pass
     ``force=True`` to a draw call to skip the diff, or call
     :meth:`invalidate` to discard the shadow — the escapes for the rare
-    write word the GRAM arbitration swallows (see docs/LESSONS.md §9).
+    write word the GRAM arbitration swallows (see docs/LESSONS.md §8).
 
     Args:
         pins: Wiring.  Defaults to the hardware-verified ``DEFAULT_PINS``.
@@ -598,22 +594,31 @@ class Display:
         # says otherwise (e.g. ERTFTM070_DISPLAY=sim with an _MmioBus).
         if vsync and isinstance(b, backends._MmioBus):
             _warn_slow_vsync()
-        if force:
-            spans = [(i, 0, width - 1) for i in range(row_count)]
-        else:
-            spans = _dirty_spans(self._shadow, self._known, words, rows, x0, y0)
+        # force means "the diff result does not matter": the whole window
+        # is dirty.  Folding it into _dirty_spans's shadow=None arm keeps
+        # one code path for both.
+        spans = _dirty_spans(
+            None if force else self._shadow, self._known, words, rows, x0, y0
+        )
         if not spans:
             return
+        emitted = False
         try:
             for _pass in range(self._write_passes):
                 for i, c0, c1 in spans:
                     if vsync:
                         self._wait_vsync_blanking()
                     b.row_blit(x0 + c0, x0 + c1, y0 + i, rows[i][c0 : c1 + 1])
+                    emitted = True
+            # Keep the commit inside the guard: an exception here (e.g. a
+            # half-made shadow allocation) still means the panel's state
+            # is unknown and the invariant "both halves set or both None"
+            # must hold for the next draw call.
+            self._commit_shadow(rows, spans, x0, y0)
         except BaseException:
-            self._clear_shadow()  # unknown what reached the panel
+            if emitted:
+                self._clear_shadow()  # unknown what reached the panel
             raise
-        self._commit_shadow(rows, spans, x0, y0)
 
     def _commit_shadow(self, rows, spans, x0: int, y0: int) -> None:
         """Record the written spans in the shadow and mark them known.
@@ -672,7 +677,7 @@ class Display:
         rectangle emits no traffic — and ``force=True`` skips the diff
         to write every pixel.  The shadow can rarely diverge from the
         panel (a write word swallowed by the GRAM arbitration in every
-        pass, see docs/LESSONS.md §9): :meth:`invalidate` forces a
+        pass, see docs/LESSONS.md §8): :meth:`invalidate` forces a
         full redraw.
 
         ``vsync=True`` paces each span into vertical blanking
@@ -690,10 +695,11 @@ class Display:
         """Set a single pixel (window + one-word stream).
 
         Written through :meth:`_blit_rows` — a single span burst with
-        the trailing dummies, and ``write_passes`` honored — so a
-        swallowed write word heals exactly like any other draw call.
-        Diffed like every draw call: an unchanged pixel emits nothing
-        (``force=True`` writes it regardless).
+        the trailing dummies, and ``write_passes`` honored.  Diffed
+        against the shadow like every draw call: an unchanged pixel
+        emits nothing, so a swallowed write word only heals once the
+        pixel is actually redrawn (``force=True`` writes it regardless
+        and :meth:`invalidate` re-arms a full redraw).
 
         Fine for sparse updates; use :meth:`fill_rect` or :meth:`image`
         for anything dense.
@@ -798,7 +804,7 @@ class Display:
         The next draw call re-emits every pixel it touches, like a full
         redraw.  Use it after anything that changes the panel behind
         the driver's back, or to rewrite a pixel the GRAM arbitration
-        swallowed in every write pass (see docs/LESSONS.md §9).  For
+        swallowed in every write pass (see docs/LESSONS.md §8).  For
         the same guarantee on a single draw, pass ``force=True``
         instead.
         """

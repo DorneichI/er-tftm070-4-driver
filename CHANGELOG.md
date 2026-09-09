@@ -37,7 +37,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   raw `_blit` path (gramcheck). The two escapes cover the one real
   trade-off of diffing on this panel: a write word swallowed by the
   GRAM arbitration in *every* pass leaves panel ≠ shadow until a forced
-  redraw (see `docs/LESSONS.md` §9).
+  redraw (see `docs/LESSONS.md` §8).
 
 ### Changed
 

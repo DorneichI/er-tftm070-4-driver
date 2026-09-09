@@ -257,6 +257,28 @@ def test_full_width_window_over_unknown_rows_still_writes(display, bus):
     assert bus.row_blit_calls == [(0, 799, y) for y in range(4)]
 
 
+def test_low_byte_only_fill_writes_every_column(display, bus):
+    # 0x001F and 0x0000 differ only in each word's low byte.  The span
+    # markers for such changes used to land one word left of their
+    # column, so the window's last column (799) was never updated and
+    # rows of pure blue ended at 798 (regression: _row_spans shift).
+    display.open()
+    display.fill(0)
+    bus.row_blit_calls.clear()
+    display.fill(0x001F)
+    assert bus.row_blit_calls == [(0, 799, y) for y in range(480)]
+
+
+def test_low_byte_only_set_pixel_reaches_its_column(display, bus):
+    display.open()
+    display.fill(0)
+    bus.row_blit_calls.clear()
+    display.set_pixel(400, 240, 0x001F)  # black -> blue: low byte only
+    assert bus.row_blit_calls == [(400, 400, 240)]
+    display.set_pixel(799, 240, 0x001F)  # the window's very last column
+    assert bus.row_blit_calls[-1] == (799, 799, 240)
+
+
 # ----------------------------------------------------------------------
 # Simulator oracle: what the panel ends up showing
 # ----------------------------------------------------------------------
@@ -283,3 +305,20 @@ def test_unwritten_pixels_are_written_even_when_black(sim_display, sim_bus):
     sim_display.fill_rect(5, 5, 10, 4, rgb565(0, 255, 0))
     sim_display.set_pixel(1, 1, 0x0000)  # black must land, not be diffed away
     assert sim_bus.pixel(1, 1) == 0x0000
+
+
+def test_low_byte_only_draws_land_pixel_exact(sim_display, sim_bus):
+    # Every pixel of the panel: black -> pure blue changes only the low
+    # byte of each word.  Regression: the whole last column stayed black
+    # and isolated pixels were painted one column left.
+    expected = array("H", [0x001F]) * (800 * 480)
+    sim_display.fill(0)
+    sim_display.fill(0x001F)
+    assert bytes(sim_display._shadow) == expected.tobytes()
+    assert bytes(sim_display._shadow) == sim_bus.full_frame()
+    assert sim_bus.pixel(799, 479) == 0x001F  # the window's last column
+    sim_display.fill(0)
+    sim_display.set_pixel(799, 240, 0x001F)
+    assert sim_bus.pixel(799, 240) == 0x001F
+    assert sim_bus.pixel(798, 240) == 0x0000  # no sideways smear
+    assert bytes(sim_display._shadow) == sim_bus.full_frame()
