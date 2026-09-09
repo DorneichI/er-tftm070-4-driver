@@ -36,7 +36,7 @@ from .touch import Touch, TouchCalibration, TouchPoint
 try:
     __version__ = version("ertftm070")
 except PackageNotFoundError:  # not installed (e.g. running from a source tree)
-    __version__ = "0.2.0"
+    __version__ = "0.3.0"
 
 BACKEND = backends.BACKEND
 

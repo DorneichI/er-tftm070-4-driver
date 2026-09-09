@@ -4,7 +4,7 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [0.3.0] — 2026-09-09
 
 ### Added
 
@@ -44,12 +44,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `fill_rect` and `image` now write one burst per *span* rather than
   per row — a fully-changed row still emits byte-identical traffic to
   before (`vsync=True` paces each emitted span).
-- `tests/test_diffing.py` — 22 tests: FakeBus traffic (first draw full,
+- `tests/test_diffing.py` — 25 tests: FakeBus traffic (first draw full,
   identical redraw silent, span narrowing, gap bridging/splitting,
   `_MAX_SPANS` fallback, full-width fast path + its known-map guard,
-  `force`, `invalidate`, `write_passes`, vsync TE-pulse counts,
-  rotation invariance, exception invalidation) plus simulator-oracle
-  checks (`_shadow` == `SimulatedBus.full_frame()` after mixed draws).
+  low-byte-only marker regressions, `force`, `invalidate`,
+  `write_passes`, vsync TE-pulse counts, rotation invariance, exception
+  invalidation) plus simulator-oracle checks (`_shadow` ==
+  `SimulatedBus.full_frame()` after mixed draws).
 
 ## [0.2.0] — 2026-09-08
 
