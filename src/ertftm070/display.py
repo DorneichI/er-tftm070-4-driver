@@ -59,6 +59,112 @@ _ROTATIONS = {
 
 _ROTATION_VALUES = frozenset(_ROTATIONS)
 
+# ----------------------------------------------------------------------
+# Shadow framebuffer and dirty-span diffing
+# ----------------------------------------------------------------------
+# The shadow is a flat _PANEL_W x _PANEL_H buffer of little-endian RGB565
+# word pairs — the panel's native (controller-space) frame, so it stays
+# valid across rotation changes: every draw call already delivers its
+# buffer in window order.  ``None`` means unsynchronized (everything
+# dirty): the panel's GRAM is unknown after reset, and anything that
+# writes behind the driver's back invalidates the shadow.
+#
+# A shadow alone cannot say which pixels are *known* — a freshly
+# allocated buffer reads as black, but the panel may hold anything
+# there.  So a parallel ``_known`` map (one byte per word) records
+# which words were ever written: unknown words are always dirty, no
+# matter what the shadow bytes claim.
+#
+# All hot comparisons run at C speed: a row diff is one big-int XOR
+# plus an OR-reduction (int.from_bytes), and the Python loop runs once
+# per changed run, never per pixel.  The byte compares rely on native
+# word order matching the wire order — little-endian on every
+# supported platform.
+_PANEL_W = _ROTATIONS[0]["width"]  # 800
+_PANEL_H = _ROTATIONS[0]["height"]  # 480
+# An unchanged stretch this wide ends a span: bridging fewer words is
+# cheaper than the ~11 register bytes plus a Python call a new window
+# costs.
+_MIN_RUN = 32
+_MIN_RUN_BITS = 16 * _MIN_RUN  # the walk below counts bits, not words
+# Changed runs per row beyond which one whole-row span wins: the
+# run-walking loop is bounded by this for pathological content.
+_MAX_SPANS = 64
+# Bit 16*w + 8 of a row diff marks "word w differs" (bit 0 of each odd
+# byte, see _row_spans) — the pattern b"\x00\x01" repeated per word.
+_WORD_BIT_MASK = int.from_bytes(b"\x00\x01" * _PANEL_W, "little")
+_BYTE_BITS = int.from_bytes(b"\x01" * (2 * _PANEL_W), "little")
+_ALL_KNOWN_W = b"\x01" * _PANEL_W  # a fully-written shadow row
+
+
+def _row_spans(a: bytes, b: bytes, width: int) -> list[tuple[int, int]]:
+    """``(col0, col1)`` inclusive spans where the row's ``a`` bytes
+    differ from ``b`` (both ``2*width`` long).
+
+    The word-level diff is one big-int XOR plus an OR-reduction that
+    folds each byte down to its bit 0, keeps those bits, then combines
+    the word's two bytes into a single marker bit at ``16*w + 8`` —
+    combining only after the mask keeps each word's marker free of its
+    neighbors.  The run walk below then runs once per changed word,
+    never per pixel.  Changed words closer than ``_MIN_RUN`` unchanged
+    words are bridged into one span; more than ``_MAX_SPANS`` spans
+    collapse to one whole-row span."""
+    d = int.from_bytes(a, "little") ^ int.from_bytes(b, "little")
+    d |= d >> 1  # fold each byte down to its bit 0...
+    d |= d >> 2
+    d |= d >> 4
+    d &= _BYTE_BITS  # ...and keep only those bits
+    d |= d >> 8  # combine the word's two bytes into one marker bit
+    d &= _WORD_BIT_MASK
+    if not d:
+        return []
+    spans = []
+    base = 0  # absolute bit index of d's bit 0
+    while d:
+        if len(spans) == _MAX_SPANS:
+            return [(0, width - 1)]  # scattered row: write it whole
+        lsb = (d & -d).bit_length() - 1  # bits to the next marker
+        d >>= lsb + 1  # drop the clean stretch and the marker itself
+        start = base + lsb
+        base += lsb + 1
+        end = start
+        while d:
+            gap = (d & -d).bit_length() - 1  # clean bits to the next marker
+            if gap >= _MIN_RUN_BITS:  # _MIN_RUN unchanged words: split
+                break
+            d >>= gap + 1  # bridge: drop the gap and the marker
+            end = base + gap
+            base += gap + 1
+        spans.append((start // 16, end // 16))
+    return spans
+
+
+def _dirty_spans(shadow, known, rows, x0: int, y0: int) -> list[tuple[int, int, int]]:
+    """``(row, col0, col1)`` — the changed spans of one blit against
+    the shadow, column offsets relative to each row (inclusive).
+
+    ``rows`` are the window-ordered 16-bit memoryviews of the blit;
+    row ``i`` covers window row ``y0+i``, columns ``x0`` to
+    ``x0+len(row)-1``.  Span windows are ``x0+col0 .. x0+col1``.  A
+    ``None`` shadow (unsynchronized) makes every row one full-width
+    span — the exact traffic an undiffed blit emits.  A window that
+    overlaps never-written pixels (``known``) is written whole too:
+    unknown pixels are always dirty, whatever the shadow bytes say.
+    """
+    if shadow is None:
+        return [(i, 0, len(rows[i]) - 1) for i in range(len(rows))]
+    spans = []
+    for i, row in enumerate(rows):
+        w = len(row)
+        woff = (y0 + i) * _PANEL_W + x0
+        if known[woff : woff + w] != _ALL_KNOWN_W[:w]:
+            spans.append((i, 0, w - 1))
+            continue
+        for c0, c1 in _row_spans(row.tobytes(), shadow[2 * woff : 2 * (woff + w)], w):
+            spans.append((i, c0, c1))
+    return spans
+
+
 # Shared wording for every TE-timeout: the pin is not pulsing, and the
 # two things that cause that are the wire and the panel being driven.
 _TE_HINT = (
@@ -158,6 +264,13 @@ class Display:
     the verified init sequence, and turns the backlight on; exiting (or
     Ctrl-C) turns the backlight off and releases the GPIO mapping.
 
+    Drawing is diffed against a shadow of the panel's contents (kept in
+    controller space, so it survives rotation changes): only the changed
+    spans are written, and an identical redraw emits nothing.  Pass
+    ``force=True`` to a draw call to skip the diff, or call
+    :meth:`invalidate` to discard the shadow — the escapes for the rare
+    write word the GRAM arbitration swallows (see docs/LESSONS.md §9).
+
     Args:
         pins: Wiring.  Defaults to the hardware-verified ``DEFAULT_PINS``.
         init_table: Init sequence.  Defaults to the verified ``INIT_UTFT``;
@@ -194,6 +307,8 @@ class Display:
             raise ValueError("write_passes must be >= 1")
         self._write_passes = write_passes
         self._bus = None  # type: Optional[backends.Bus]
+        self._shadow = None  # type: Optional[bytearray]  # panel shadow (controller space)
+        self._known = None  # type: Optional[bytearray]  # one byte per shadow word
         self._opened = False
         self._rotation = 0
         self.width = 800
@@ -248,6 +363,7 @@ class Display:
         first — after this the GPIO pins are released, and touch pin
         operations (INT, /RST) fail.
         """
+        self._clear_shadow()  # a closed bus knows nothing about the panel
         if self._bus is not None:
             try:
                 self.backlight(False)
@@ -318,6 +434,7 @@ class Display:
     def reset(self) -> None:
         """Hardware reset: RESET low 100 ms, then high, wait 200 ms."""
         b = self._bus_checked()
+        self._clear_shadow()  # GRAM is garbage after a hardware reset
         log.info("hardware reset")
         b.pin_write(self.pins.reset, False)
         time.sleep(0.1)
@@ -370,6 +487,7 @@ class Display:
         multi-row: a swallowed write word mid-burst shifts everything
         after it, so large areas are written one row per burst.
         """
+        self._clear_shadow()  # raw-burst writes bypass the shadow
         b = self._bus_checked()
         self._command(0x2C)  # memory write
         b.pin_write(self.pins.cs, False)
@@ -378,7 +496,8 @@ class Display:
         b.pin_write(self.pins.cs, True)
 
     def _blit_rows(
-        self, buf, x0: int, y0: int, x1: int, y1: int, vsync: bool = False
+        self, buf, x0: int, y0: int, x1: int, y1: int, vsync: bool = False,
+        force: bool = False,
     ) -> None:
         """Write a row-major buffer to a controller-space window, one row
         per burst.
@@ -391,10 +510,10 @@ class Display:
         every row is written again, healing most swallowed words (a word
         must be swallowed in *every* pass to stay wrong).
 
-        Each row is one ``Bus.row_blit`` call — window commands, burst
-        and CS/DC framing in a single backend call (a single C call on
-        the fast backend), instead of the ~27 per-row calls that
-        dominated small-blit latency.
+        Each emitted span is one ``Bus.row_blit`` call — window
+        commands, burst and CS/DC framing in a single backend call (a
+        single C call on the fast backend), instead of the ~27 per-row
+        calls that dominated small-blit latency.
 
         ``buf`` must hold exactly ``(x1 - x0 + 1) * (y1 - y0 + 1)``
         16-bit RGB565 words, row-major in window order: ``array('H')``,
@@ -414,6 +533,18 @@ class Display:
         pure-Python backend's ~20 ms rows do not fit one blanking
         window at all; it degrades to one row per frame (a warning is
         logged once).
+
+        Before writing, the blit is diffed against the shadow of what
+        the panel shows (see :func:`_dirty_spans`): only the spans
+        whose pixels differ are written, each through its own window —
+        an identical redraw emits nothing, and a mostly-static frame
+        costs only its changed pixels.  Spans are computed once and
+        replayed for every ``write_passes`` pass; the shadow is
+        committed only after all passes succeed, and any exception
+        mid-blit invalidates it (the next draw re-emits everything).
+        ``force=True`` skips the diff and writes every row of the
+        window in full; :meth:`invalidate` re-arms a full redraw from
+        the user side.
         """
         width = x1 - x0 + 1
         row_count = y1 - y0 + 1
@@ -436,11 +567,45 @@ class Display:
         # says otherwise (e.g. ERTFTM070_DISPLAY=sim with an _MmioBus).
         if vsync and isinstance(b, backends._MmioBus):
             _warn_slow_vsync()
-        for _pass in range(self._write_passes):
-            for yy, row in zip(range(y0, y1 + 1), rows):
-                if vsync:
-                    self._wait_vsync_blanking()
-                b.row_blit(x0, x1, yy, row)
+        if force:
+            spans = [(i, 0, width - 1) for i in range(row_count)]
+        else:
+            spans = _dirty_spans(self._shadow, self._known, rows, x0, y0)
+        if not spans:
+            return
+        try:
+            for _pass in range(self._write_passes):
+                for i, c0, c1 in spans:
+                    if vsync:
+                        self._wait_vsync_blanking()
+                    b.row_blit(x0 + c0, x0 + c1, y0 + i, rows[i][c0 : c1 + 1])
+        except BaseException:
+            self._clear_shadow()  # unknown what reached the panel
+            raise
+        self._commit_shadow(rows, spans, x0, y0)
+
+    def _commit_shadow(self, rows, spans, x0: int, y0: int) -> None:
+        """Record the written spans in the shadow and mark them known.
+
+        Called only after every write pass succeeded; ``spans`` are the
+        ``(row, col0, col1)`` triples :func:`_dirty_spans` produced.
+        A committed word is one the panel is *known* to hold — before
+        the first write of a region, ``_dirty_spans`` treats it as
+        always-dirty no matter what the shadow bytes claim.
+        """
+        if self._shadow is None:
+            self._shadow = bytearray(_PANEL_W * _PANEL_H * 2)
+            self._known = bytearray(_PANEL_W * _PANEL_H)
+        for i, c0, c1 in spans:
+            rb = rows[i][c0 : c1 + 1].tobytes()
+            off = ((y0 + i) * _PANEL_W + x0 + c0) * 2
+            self._shadow[off : off + len(rb)] = rb
+            self._known[off // 2 : off // 2 + c1 - c0 + 1] = b"\x01" * (c1 - c0 + 1)
+
+    def _clear_shadow(self) -> None:
+        """Drop the shadow: the panel's contents are no longer known."""
+        self._shadow = None
+        self._known = None
 
     def _check_bounds(self, x: int, y: int, w: int, h: int) -> None:
         if w <= 0 or h <= 0:
@@ -455,52 +620,72 @@ class Display:
     # Drawing
     # ------------------------------------------------------------------
 
-    def fill(self, color: int) -> None:
-        """Fill the whole screen with an RGB565 color (0..65535)."""
-        self.fill_rect(0, 0, self.width, self.height, color)
+    def fill(self, color: int, force: bool = False) -> None:
+        """Fill the whole screen with an RGB565 color (0..65535).
+
+        Diffed like every draw call — see :meth:`fill_rect`; pass
+        ``force=True`` to write every pixel regardless.
+        """
+        self.fill_rect(0, 0, self.width, self.height, color, force=force)
 
     def fill_rect(
-        self, x: int, y: int, w: int, h: int, color: int, vsync: bool = False
+        self, x: int, y: int, w: int, h: int, color: int, vsync: bool = False,
+        force: bool = False,
     ) -> None:
         """Fill a rectangle with an RGB565 color.
 
-        Written one row per burst (see :meth:`_blit_rows`) so a swallowed
-        write word can never shift more than one row.  The fast way to do
-        partial updates — redraw only what changed.
+        Written one span per burst (see :meth:`_blit_rows`) so a
+        swallowed write word can never shift more than one span.  The
+        rectangle is diffed against the shadow of what the panel shows:
+        only the changed spans are written — redrawing an identical
+        rectangle emits no traffic — and ``force=True`` skips the diff
+        to write every pixel.  The shadow can rarely diverge from the
+        panel (a write word swallowed by the GRAM arbitration in every
+        pass, see docs/LESSONS.md §9): :meth:`invalidate` forces a
+        full redraw.
 
-        ``vsync=True`` paces each row into vertical blanking (tear-free;
-        see :meth:`_blit_rows` for the cost) — for narrow moving content.
+        ``vsync=True`` paces each span into vertical blanking
+        (tear-free; see :meth:`_blit_rows` for the cost) — for narrow
+        moving content.
         """
         self._check_bounds(x, y, w, h)
         cx0, cy0, cx1, cy1 = _map_rect(self._rotation, x, y, x + w - 1, y + h - 1)
         self._blit_rows(
-            array("H", [color & 0xFFFF]) * (w * h), cx0, cy0, cx1, cy1, vsync=vsync
+            array("H", [color & 0xFFFF]) * (w * h), cx0, cy0, cx1, cy1,
+            vsync=vsync, force=force,
         )
 
-    def set_pixel(self, x: int, y: int, color: int) -> None:
+    def set_pixel(self, x: int, y: int, color: int, force: bool = False) -> None:
         """Set a single pixel (window + one-word stream).
 
-        Written through :meth:`_blit_rows` — a single row burst with the
-        trailing dummies, and ``write_passes`` honored — so a swallowed
-        write word heals exactly like any other draw call.
+        Written through :meth:`_blit_rows` — a single span burst with
+        the trailing dummies, and ``write_passes`` honored — so a
+        swallowed write word heals exactly like any other draw call.
+        Diffed like every draw call: an unchanged pixel emits nothing
+        (``force=True`` writes it regardless).
 
         Fine for sparse updates; use :meth:`fill_rect` or :meth:`image`
         for anything dense.
         """
         self._check_bounds(x, y, 1, 1)
         cx0, cy0, cx1, cy1 = _map_rect(self._rotation, x, y, x, y)
-        self._blit_rows(array("H", [color & 0xFFFF]), cx0, cy0, cx1, cy1)
+        self._blit_rows(
+            array("H", [color & 0xFFFF]), cx0, cy0, cx1, cy1, force=force
+        )
 
     def image(
         self, img: Image.Image, x: int = 0, y: int = 0, fit: bool = False,
-        vsync: bool = False,
+        vsync: bool = False, force: bool = False,
     ) -> None:
         """Blit a Pillow image at the given top-left corner.
 
         The image is converted to RGB and packed to RGB565 rows; anything
         Pillow can open works (PNG, JPEG, GIF, …).  Draw text, shapes,
         charts or a whole UI into a PIL image first and blit it here —
-        that's the intended pattern.
+        that's the intended pattern.  The blit is diffed against the
+        shadow of what the panel shows: only the changed spans are
+        written, so a mostly-static frame (a dashboard clock) costs
+        milliseconds, not the ~0.6 s of a full rewrite.
 
         Args:
             img: The Pillow image to show.
@@ -509,8 +694,10 @@ class Display:
                 to fit inside the current logical screen.  Useful after
                 a rotation, which swaps ``width``/``height``: an 800x480
                 image no longer fits a 480x800 screen.
-            vsync: Pace each row into vertical blanking (tear-free; see
+            vsync: Pace each span into vertical blanking (tear-free; see
                 :meth:`_blit_rows` for the cost).
+            force: Skip the shadow diff — write every pixel of the
+                image (the default emits only what changed).
 
         Requires the ``pillow`` extra: ``pip install ertftm070[Pillow]``.
         """
@@ -528,7 +715,7 @@ class Display:
         img = rotate_image(img, self._rotation)
         buf = rgb888_to_565_buffer(img)
         cx0, cy0, cx1, cy1 = _map_rect(self._rotation, x, y, x + w - 1, y + h - 1)
-        self._blit_rows(buf, cx0, cy0, cx1, cy1, vsync=vsync)
+        self._blit_rows(buf, cx0, cy0, cx1, cy1, vsync=vsync, force=force)
 
     # ------------------------------------------------------------------
     # Display state
@@ -573,6 +760,18 @@ class Display:
         if self._rotation == 270:
             return (y, 799 - x)
         return (x, y)
+
+    def invalidate(self) -> None:
+        """Discard the driver's shadow of the panel's contents.
+
+        The next draw call re-emits every pixel it touches, like a full
+        redraw.  Use it after anything that changes the panel behind
+        the driver's back, or to rewrite a pixel the GRAM arbitration
+        swallowed in every write pass (see docs/LESSONS.md §9).  For
+        the same guarantee on a single draw, pass ``force=True``
+        instead.
+        """
+        self._clear_shadow()
 
     def backlight(self, on: bool) -> None:
         """Switch the backlight on (True) or off (False)."""

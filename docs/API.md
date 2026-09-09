@@ -38,23 +38,32 @@ Attributes: `width`, `height` (follow the rotation), `pins`, `rotation`,
 ### Methods
 
 **Drawing** — all colors are 16-bit RGB565 words (`rgb565(r, g, b)`).
-Every drawing call accepts `vsync=False`: with `True` each row waits
+Every drawing call accepts `vsync=False`: with `True` each span waits
 for the start of a fresh vertical-blanking window (TE pin) before it is
-written — tear-free, at one frame per row.  Meant for narrow,
+written — tear-free, at one frame per span.  Meant for narrow,
 fast-moving content; see the `vsync_wait` note below for the cost.
+Every drawing call also accepts `force=False`: `True` skips the
+shadow diff and writes every pixel of the window in full.
 
-- `fill(color)` — fill the whole (rotated) screen. Fast path, ~0.6 s.
-- `fill_rect(x, y, w, h, color, vsync=False)` — one window, written one
-  row per burst (a swallowed write word can then shift only one row —
-  see `docs/LESSONS.md`); the right way to do partial updates (redraw
-  only what changed).
-- `set_pixel(x, y, color)` — single-pixel window write. Fine for sparse
-  updates; use `fill_rect`/`image` for anything dense.
-- `image(pil_image, x=0, y=0, fit=False, vsync=False)` — convert a
-  Pillow image to RGB565 rows and blit it at the given top-left corner.
-  With `fit=True` the image is scaled down (aspect preserved) to fit
-  the current logical screen — handy after a rotation swaps
-  `width`/`height`. Requires the `Pillow` extra.
+- `fill(color, force=False)` — fill the whole (rotated) screen. Fast path, ~0.6 s.
+- `fill_rect(x, y, w, h, color, vsync=False, force=False)` — one window,
+  written one span per burst (a swallowed write word can then shift only
+  one span — see `docs/LESSONS.md`); the right way to do partial updates.
+- `set_pixel(x, y, color, force=False)` — single-pixel window write.
+  Fine for sparse updates; use `fill_rect`/`image` for anything dense.
+- `image(pil_image, x=0, y=0, fit=False, vsync=False, force=False)` —
+  convert a Pillow image to RGB565 rows and blit it at the given
+  top-left corner.  With `fit=True` the image is scaled down (aspect
+  preserved) to fit the current logical screen — handy after a rotation
+  swaps `width`/`height`.  Requires the `Pillow` extra.
+
+  Drawing is diffed against a shadow of the panel's contents (kept in
+  controller space, so it survives rotation changes): only the changed
+  spans are written — an identical redraw emits nothing, and a
+  mostly-static frame (a dashboard clock) costs milliseconds instead
+  of the ~0.6 s of a full rewrite.  The shadow can rarely diverge from
+  the panel (a write word swallowed by the GRAM arbitration in every
+  pass): `force=True` or `invalidate()` below are the escapes.
 
 **Display state**
 
@@ -67,6 +76,12 @@ fast-moving content; see the `vsync_wait` note below for the cost.
   current logical frame, ready for the draw calls.  Identity at
   `rotation=0`.
 - `backlight(on)` — backlight pin high/low.
+- `invalidate()` — discard the driver's shadow of the panel's
+  contents: the next draw re-emits every pixel it touches, like a full
+  redraw.  Use after anything that changes the panel behind the
+  driver's back, or to rewrite a pixel the GRAM arbitration swallowed
+  in every write pass; for the same guarantee on a single draw, pass
+  `force=True` instead.
 - `sleep()` / `wake()` — display off + enter sleep / exit sleep +
   display on.
 

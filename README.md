@@ -141,6 +141,7 @@ import (set it before starting Python), and an explicit
 | Backlight | `lcd.backlight(True / False)` |
 | Power | `lcd.sleep()` · `lcd.wake()` |
 | Tear-free updates | `vsync=True` on `fill_rect`/`image` — rows paced into vertical blanking (needs the TE wire; opt-in, see the docstring) |
+| Skip unchanged pixels | diffing is on by default — only changed spans are written; `force=True` on any draw call · `lcd.invalidate()` |
 | Measured clocks | `lcd.refresh_rate()` → `(pclk_khz, hz)` · `lcd.vsync_wait()` |
 | Touch | `Touch(lcd.bus)` — `read(mapped=True)`, `wait_touch()`, `reset()` |
 | Diagnostics | `lcd.selftest()` · `lcd.gramcheck()` (both return bool) |
@@ -193,6 +194,16 @@ Full-screen fill (800×480×16-bit), measured on a Pi Zero W:
 shifted pixel on your particular Pi (see LESSONS.md — the SSD1963
 occasionally swallows a write strobe), `Display(write_passes=2)` heals
 most of it at ~2× the time.
+
+Draw calls are **diffed against a shadow of the panel's contents**: only
+the changed spans are written (memcmp speed, ~ms for a full-screen
+compare vs ~0.6 s to write it), so dashboard-style updates — a clock or
+graph in a mostly static UI — cost milliseconds instead of a full
+rewrite. An identical redraw emits nothing. `force=True` on any draw
+call skips the diff; `lcd.invalidate()` discards the shadow and forces
+a full redraw — the escapes for the rare write word the GRAM
+arbitration swallows in *every* pass, which would otherwise leave the
+panel out of sync with the shadow.
 
 ## Touch
 
