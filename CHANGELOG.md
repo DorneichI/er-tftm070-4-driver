@@ -4,6 +4,53 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+
+- Shadow-framebuffer diffing, on by default for every draw call
+  (`fill`, `fill_rect`, `set_pixel`, `image`): `Display` keeps a RAM
+  copy of what the panel shows (controller space, so it survives
+  rotation changes; a per-word "known" map keeps never-written pixels
+  always-dirty) and emits `row_blit` traffic only for the **changed
+  spans** — changed runs within a row are coalesced (gaps below 32 px
+  are cheaper to bridge than a new window costs) and blitted through
+  narrower windows; scattered rows fall back to one whole-row span.
+  An identical redraw emits nothing, and a mostly-static frame (a
+  dashboard clock) costs milliseconds instead of the ~0.6 s of a full
+  rewrite. The diff runs in pure Python at C speed: a memcmp per clean
+  row, one big-int XOR + OR-reduction for a changed row (a Python loop
+  only per changed run), and one memcmp each for an unchanged
+  full-width window. Measured on the Pi Zero W: an identical
+  full-screen redraw diffs in **~23 ms** and a changed 100×40 rect in
+  **~13 ms**, against ~0.6 s per full write. Spans are computed once
+  and replayed for every `write_passes` pass; the shadow is committed
+  only after all passes succeed, and any exception mid-blit
+  invalidates it (the next draw re-emits everything). Verified on
+  hardware 2026-09-09: a span-window blit read back from GRAM leaves
+  the untouched columns intact.
+- `force=True` on `fill`/`fill_rect`/`set_pixel`/`image` — skip the
+  diff and write every pixel of the window (the brute-force escape
+  hatch).
+- `Display.invalidate()` — discard the shadow; the next draw is a full
+  redraw. Also invalidated internally on `reset()`, `close()`, and the
+  raw `_blit` path (gramcheck). The two escapes cover the one real
+  trade-off of diffing on this panel: a write word swallowed by the
+  GRAM arbitration in *every* pass leaves panel ≠ shadow until a forced
+  redraw (see `docs/LESSONS.md` §8).
+
+### Changed
+
+- `fill_rect` and `image` now write one burst per *span* rather than
+  per row — a fully-changed row still emits byte-identical traffic to
+  before (`vsync=True` paces each emitted span).
+- `tests/test_diffing.py` — 22 tests: FakeBus traffic (first draw full,
+  identical redraw silent, span narrowing, gap bridging/splitting,
+  `_MAX_SPANS` fallback, full-width fast path + its known-map guard,
+  `force`, `invalidate`, `write_passes`, vsync TE-pulse counts,
+  rotation invariance, exception invalidation) plus simulator-oracle
+  checks (`_shadow` == `SimulatedBus.full_frame()` after mixed draws).
+
 ## [0.2.0] — 2026-09-08
 
 ### Added
