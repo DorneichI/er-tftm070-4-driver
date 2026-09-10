@@ -84,12 +84,18 @@ FULL_SIZE = 1 + WIDTH * HEIGHT * 2
 TE_PERIOD = 1.0 / 53.7
 TE_BLANK_FRACTION = 0.08
 
-# A row burst on the real panel takes ~1.3 ms (measured; see
-# Display._blit_rows docs).  row_blit paces itself the same way so an
-# app that redraws continuously — touch_paint's touch loop has no sleep
-# of its own — drives the simulator at hardware rates instead of
-# flooding the server with microseconds of memcpys.
-_ROW_TIME = 0.0013
+# A full-width row burst on the real panel takes ~1.3 ms (measured; see
+# Display._blit_rows docs), and each blit additionally pays the window
+# commands (0x2A/0x2B/0x2C + framing, ~11 register bytes) once no
+# matter its width.  row_blit paces itself the same way so an app that
+# redraws continuously — touch_paint's touch loop has no sleep of its
+# own — drives the simulator at hardware rates instead of flooding the
+# server with microseconds of memcpys.  Diff-based updates emit spans
+# far narrower than a row, so the pace scales with the words written:
+# charging the flat full-row time per call made a changed 100x40 rect
+# cost ~66 ms in the sim against ~13 ms on the panel.
+_ROW_TIME = 0.0013  # one full-width 800-word burst
+_WINDOW_TIME = 40e-6  # the window commands, paid once per call
 
 # The first point-record register.  Bound straight to touch.py's table
 # so the register map cannot drift apart from decode_points (the
@@ -386,7 +392,9 @@ class SimulatedBus:
             # fed — a headless ``serve=False`` sim never pays the pack.
             payload = ROW_HEADER.pack(ROW_MSG, x0, x1, y, len(view)) + row_bytes
             self._server.push_row(payload)
-        time.sleep(_ROW_TIME)  # the panel's ~1.3 ms row burst
+        # The panel's burst time for this span: the window cost once,
+        # plus the words at the full-row rate.
+        time.sleep(_WINDOW_TIME + _ROW_TIME * len(view) / WIDTH)
 
     # -- framebuffer access --
 

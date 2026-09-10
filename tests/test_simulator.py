@@ -16,6 +16,7 @@ from array import array
 import pytest
 
 from ertftm070 import backends
+from ertftm070 import simulator as simulator_module
 from ertftm070._i2c import I2CError
 from ertftm070.colors import rgb565
 from ertftm070.display import Display
@@ -99,9 +100,27 @@ def test_row_blit_accepts_bytes_and_partial_rows_compose(sim_bus):
     assert [sim_bus.pixel(x, 0) for x in range(4)] == [0x1234, 0x5678, 0x9ABC, 0xDEF0]
 
 
-def test_fill_round_trip_through_display(sim_bus):
+def test_row_blit_paces_by_span_width(sim_bus, monkeypatch):
+    # Diff-based updates emit spans far narrower than a row, so the
+    # pacing must scale with the words written (plus the window cost
+    # once per call), not charge the flat full-row time per call.
+    sleeps = []
+    monkeypatch.setattr(simulator_module.time, "sleep", sleeps.append)
+    sim_bus.row_blit(0, WIDTH - 1, 0, array("H", [0] * WIDTH))
+    sim_bus.row_blit(100, 149, 1, array("H", [0] * 50))
+    assert sleeps[0] == pytest.approx(
+        simulator_module._WINDOW_TIME + simulator_module._ROW_TIME
+    )
+    assert sleeps[1] == pytest.approx(
+        simulator_module._WINDOW_TIME + simulator_module._ROW_TIME * 50 / WIDTH
+    )
+
+
+def test_fill_round_trip_through_display(sim_bus, monkeypatch):
     # A whole Display against the sim bus: fill() must land in the
-    # framebuffer exactly as rgb565() defines the color.
+    # framebuffer exactly as rgb565() defines the color.  The row pacing
+    # is not what this test checks — skip its 480 paced sleeps.
+    monkeypatch.setattr(simulator_module.time, "sleep", lambda seconds: None)  # noqa: ARG005
     with Display(backend=sim_bus, auto_init=False, backlight=False) as lcd:
         lcd.fill(rgb565(200, 30, 90))
     assert sim_bus.pixel(0, 0) == rgb565(200, 30, 90)
