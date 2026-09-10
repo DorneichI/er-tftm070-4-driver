@@ -4,6 +4,18 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Fixed
+
+- Simulator pacing after diff-based updates: `SimulatedBus.row_blit`
+  charged the flat full-row burst time (~1.3 ms) for every span,
+  however narrow — a changed 100×40 rect cost ~66 ms in the sim
+  against ~13 ms on the panel, and a single `set_pixel` ~1.7 ms
+  against tens of µs.  The pace now scales with the words written
+  plus the one-off window cost, so a full-screen fill keeps its
+  ~0.6 s while small spans stream at panel rates.
+
 ## [0.3.0] — 2026-09-09
 
 ### Added
